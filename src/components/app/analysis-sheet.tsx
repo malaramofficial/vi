@@ -13,13 +13,13 @@ import type { PowerEvent } from '@/hooks/use-power-status';
 import type { AnalyzePowerOutageTrendsOutput } from '@/ai/flows/analyze-power-outage-trends';
 import { formatDistanceToNow } from 'date-fns';
 import { useFirestore, useUser, useCollection, useMemoFirebase } from '@/firebase';
-import { collection } from 'firebase/firestore';
+import { collection, query, orderBy } from 'firebase/firestore';
 
 
 export function AnalysisSheet() {
   const firestore = useFirestore();
   const { user } = useUser();
-  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
+  const powerEventsRef = useMemoFirebase(() => user ? query(collection(firestore, 'users', user.uid, 'powerEvents'), orderBy('timestamp', 'desc')) : null, [firestore, user]);
   const { data: log, isLoading: isLogLoading } = useCollection<PowerEvent>(powerEventsRef);
 
   const [analysis, setAnalysis] = useState<AnalyzePowerOutageTrendsOutput | null>(null);
@@ -79,7 +79,7 @@ export function AnalysisSheet() {
                   {isLogLoading && <p>Loading log...</p>}
                   {log && log.length > 0 ? (
                     <ul className="space-y-2 text-sm">
-                      {[...log].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((event, index) => (
+                      {log.map((event, index) => (
                         <li key={index} className="flex items-center justify-between">
                           <span className={`font-medium ${event.status === 'online' ? 'text-green-500' : 'text-destructive'}`}>
                             {event.status === 'online' ? 'Power ON' : 'Power OFF'}
@@ -151,3 +151,5 @@ export function AnalysisSheet() {
     </Sheet>
   );
 }
+
+    

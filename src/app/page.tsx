@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Zap, ZapOff } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
-import { doc, setDoc, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, collection } from 'firebase/firestore';
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 
 
@@ -51,15 +51,19 @@ export default function Home() {
   const powerOnSoundRef = useRef<Tone.Synth | null>(null);
 
   useEffect(() => {
-    // Initialize sounds
-    powerOffSoundRef.current = new Tone.Synth({
-      oscillator: { type: 'square' },
-      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
-    }).toDestination();
-    powerOnSoundRef.current = new Tone.Synth({
-      oscillator: { type: 'sine' },
-      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
-    }).toDestination();
+    // Initialize sounds only once
+    if (!powerOffSoundRef.current) {
+      powerOffSoundRef.current = new Tone.Synth({
+        oscillator: { type: 'square' },
+        envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
+      }).toDestination();
+    }
+    if (!powerOnSoundRef.current) {
+      powerOnSoundRef.current = new Tone.Synth({
+        oscillator: { type: 'sine' },
+        envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
+      }).toDestination();
+    }
   }, []);
   
   useEffect(() => {
@@ -98,14 +102,17 @@ export default function Home() {
       }
     }
 
-    Notification.requestPermission().then(permission => {
-      if (permission === 'granted') {
-        new Notification('Vidyut Sahayak', {
-          body: event.status === 'online' ? 'Power has been restored.' : 'Power outage detected.',
-          icon: event.status === 'online' ? '/zap.svg' : '/zap-off.svg',
-        });
-      }
-    });
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          new Notification('Vidyut Sahayak', {
+            body: event.status === 'online' ? 'Power has been restored.' : 'Power outage detected.',
+            icon: event.status === 'online' ? '/zap.svg' : '/zap-off.svg',
+          });
+        }
+      });
+    }
+
 
     toast({
       title: event.status === 'online' ? 'Power Restored' : 'Power Outage',
@@ -141,25 +148,30 @@ export default function Home() {
   };
   
   useEffect(() => {
-    if (isPowerOnline === undefined) return;
-    // Only master device controls the state
+    if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
+
     if (isPowerOnline) {
+      // If power is ON and timer was paused, resume it.
       if (timerMode === 'paused') {
         updateTimerState({ timerMode: 'running' });
       }
     } else {
+      // If power is OFF and timer was running, pause it.
       if (timerMode === 'running') {
         updateTimerState({ timerMode: 'paused' });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPowerOnline]);
+  }, [isPowerOnline, isTimerLoading, timerData]); // Rerun when power status or timer data from firestore changes
   
   useEffect(() => {
     if (timerMode === 'running') {
       startTimerInterval();
     } else {
       stopTimerInterval();
+      if (timerMode !== 'finished') {
+          localTimerRef.current = null;
+      }
     }
     return stopTimerInterval;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -320,3 +332,5 @@ export default function Home() {
     </div>
   );
 }
+
+    
