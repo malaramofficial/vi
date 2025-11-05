@@ -35,7 +35,7 @@ export default function Home() {
   const userTimerRef = useMemoFirebase(() => user ? doc(firestore, 'timers', user.uid) : null, [firestore, user]);
   const { data: timerData, isLoading: isTimerLoading } = useDoc<TimerData>(userTimerRef);
 
-  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
+  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'power_events') : null, [firestore, user]);
   
   const [hours, setHours] = useState('0');
   const [minutes, setMinutes] = useState('30');
@@ -153,7 +153,7 @@ export default function Home() {
   };
   
   const makeAnnouncement = useCallback(async () => {
-      const currentRemaining = localTimerRef.current;
+      const currentRemaining = localTimerRef.current ?? remainingTime;
       if (currentRemaining === null || currentRemaining <= 0 || isAnnouncing) return;
       
       setIsAnnouncing(true);
@@ -174,7 +174,7 @@ export default function Home() {
         console.error("Failed to get spoken time:", error);
         setIsAnnouncing(false);
       }
-    }, [isAnnouncing]);
+    }, [isAnnouncing, remainingTime]);
 
   const stopAnnouncementInterval = () => {
     if (announcementIntervalRef.current) {
