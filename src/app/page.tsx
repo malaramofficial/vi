@@ -51,6 +51,7 @@ export default function Home() {
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastAnnouncementTimeRef = useRef<number | null>(null);
+  const audioStarted = useRef(false);
 
 
   // Sound effects
@@ -96,7 +97,6 @@ export default function Home() {
         addDocumentNonBlocking(collection(powerEventsRef.firestore, 'power_events'), { ...event, userId: user.uid, deviceId: 'TBD' });
     }
     
-    await Tone.start();
     if (event.status === 'offline') {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
@@ -135,7 +135,6 @@ export default function Home() {
       const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
 
       try {
-        await Tone.start();
         const result = await getSpokenTime(textToSpeak);
         if (result && result.media) {
             const audioContext = Tone.getContext().rawContext;
@@ -185,7 +184,7 @@ export default function Home() {
     stopTimerInterval();
     if (!timerData) return;
 
-    lastAnnouncementTimeRef.current = null; // Reset announcement timer
+    lastAnnouncementTimeRef.current = null; 
 
     intervalRef.current = setInterval(() => {
         if (!timerData?.startTime) {
@@ -198,10 +197,8 @@ export default function Home() {
         
         let elapsedSeconds = (now - serverStartTime) / 1000;
         
-        // Adjust for pauses
         elapsedSeconds -= timerData.accumulatedPauseTime || 0;
         
-        // If it's currently paused, calculate how long it's been paused in this session
         if (timerMode === 'paused' && timerData.pauseTime) {
              const serverPauseTime = timerData.pauseTime.toDate().getTime();
              const currentPauseDuration = (now - serverPauseTime) / 1000;
@@ -211,10 +208,8 @@ export default function Home() {
         const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
         setDisplayTime(remaining);
 
-        // Announce every 15 minutes (900 seconds)
         if (lastAnnouncementTimeRef.current === null) {
             lastAnnouncementTimeRef.current = remaining;
-            // Don't announce on start, only on intervals
         } else if (lastAnnouncementTimeRef.current - remaining >= 900) {
             makeAnnouncement(remaining);
             lastAnnouncementTimeRef.current = remaining;
@@ -231,9 +226,7 @@ export default function Home() {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
 
     if (isPowerOnline) {
-      // Power is ON
       if (timerMode === 'paused') {
-        // Resuming from a pause
         const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
         if (timerData.pauseTime) {
@@ -247,9 +240,7 @@ export default function Home() {
         });
       }
     } else {
-      // Power is OFF
       if (timerMode === 'running') {
-        // Pausing the timer
         updateTimerState({ 
             timerMode: 'paused',
             pauseTime: serverTimestamp() as unknown as Timestamp,
@@ -300,7 +291,7 @@ export default function Home() {
   useEffect(() => {
     if (timerMode === 'finished') {
       const initAlarm = async () => {
-        await Tone.start();
+        if (!audioStarted.current) return;
         const alarmSynth = new Tone.PulseOscillator('C4', 0.4).toDestination();
         const alarmLfo = new Tone.LFO(5, 400, 4000).connect(alarmSynth.frequency).start();
         alarmSynth.start();
@@ -323,12 +314,17 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerMode]);
 
-  const handleStartTimer = () => {
+  const handleStartTimer = async () => {
     const h = parseInt(hours, 10) || 0;
     const m = parseInt(minutes, 10) || 0;
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
+      if (!audioStarted.current) {
+        await Tone.start();
+        audioStarted.current = true;
+      }
+      
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
         startTime: serverTimestamp() as unknown as Timestamp,
@@ -465,3 +461,5 @@ export default function Home() {
     </div>
   );
 }
+
+    
