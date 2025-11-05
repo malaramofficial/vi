@@ -73,6 +73,7 @@ export default function Home() {
   const [displayTime, setDisplayTime] = useState(0);
   
   const [useSoundControl, setUseSoundControl] = useState(false);
+  const [isMicActive, setIsMicActive] = useState(true);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -146,9 +147,7 @@ export default function Home() {
   const timerMode = timerData?.timerMode ?? 'idle';
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
-    if (!audioContextStarted.current) {
-        await startAudioContext();
-    }
+    await startAudioContext();
     
     if (powerEventsRef && user) {
         addDocumentNonBlocking(collection(powerEventsRef.firestore, 'power_events'), { ...event, userId: user.uid, deviceId: 'TBD' });
@@ -186,13 +185,13 @@ export default function Home() {
   const { isSoundDetected, error: soundError, start: startSoundCheck, stop: stopSoundCheck } = useSoundStatus();
 
   useEffect(() => {
-    if (useSoundControl) {
+    if (useSoundControl && isMicActive) {
       startSoundCheck();
     } else {
       stopSoundCheck();
     }
     return () => stopSoundCheck();
-  }, [useSoundControl, startSoundCheck, stopSoundCheck]);
+  }, [useSoundControl, isMicActive, startSoundCheck, stopSoundCheck]);
 
   const isTimerActiveSource = useSoundControl ? isSoundDetected : isPowerOnline;
 
@@ -374,6 +373,7 @@ export default function Home() {
     
     if (durationInSeconds > 0) {
       await startAudioContext();
+      setIsMicActive(true); // Ensure mic is active when starting timer with sound control
       
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
@@ -525,7 +525,13 @@ export default function Home() {
         <div className="flex justify-center items-center gap-4 mb-4">
             <h1 className="text-3xl font-bold text-center text-primary">Vidyut Sahayak</h1>
              {useSoundControl ? (
-              <StatusIndicator isActive={isSoundDetected} activeText="Sound Detected" inactiveText="Silence" IconOn={Mic} IconOff={MicOff} />
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="icon" onClick={() => setIsMicActive(!isMicActive)} className="h-8 w-8">
+                  {isMicActive ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4 text-destructive" />}
+                  <span className="sr-only">Toggle Microphone</span>
+                </Button>
+                <StatusIndicator isActive={isSoundDetected} activeText="Sound" inactiveText="Silence" IconOn={Mic} IconOff={MicOff} />
+              </div>
             ) : (
               <PowerStatus isOnline={isPowerOnline} />
             )}
