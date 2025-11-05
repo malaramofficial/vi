@@ -32,7 +32,10 @@ export function useSoundStatus(): UseSoundStatusResult {
   const stopTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const monitor = useCallback(() => {
-    if (!analyserRef.current) return;
+    if (!analyserRef.current) {
+        if(animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        return;
+    };
 
     const dataArray = new Uint8Array(analyserRef.current.fftSize);
     analyserRef.current.getByteTimeDomainData(dataArray);
@@ -45,30 +48,30 @@ export function useSoundStatus(): UseSoundStatusResult {
     const rms = Math.sqrt(sumSquares / dataArray.length);
     const db = 20 * Math.log10(rms);
 
-    if (db > SENSITIVITY_THRESHOLD) {
-      // Sound is detected
-      if (stopTimerRef.current) {
-        clearTimeout(stopTimerRef.current);
-        stopTimerRef.current = null;
-      }
-      if (!isSoundDetected && !startTimerRef.current) {
-        startTimerRef.current = setTimeout(() => {
-          setIsSoundDetected(true);
-          startTimerRef.current = null;
-        }, START_DELAY);
-      }
-    } else {
-      // Silence is detected
-      if (startTimerRef.current) {
-        clearTimeout(startTimerRef.current);
-        startTimerRef.current = null;
-      }
-      if (isSoundDetected && !stopTimerRef.current) {
-        stopTimerRef.current = setTimeout(() => {
-          setIsSoundDetected(false);
-          stopTimerRef.current = null;
-        }, STOP_DELAY);
-      }
+    const currentlySoundDetected = db > SENSITIVITY_THRESHOLD;
+
+    if (currentlySoundDetected) {
+        if (stopTimerRef.current) {
+            clearTimeout(stopTimerRef.current);
+            stopTimerRef.current = null;
+        }
+        if (!isSoundDetected && !startTimerRef.current) {
+            startTimerRef.current = setTimeout(() => {
+                setIsSoundDetected(true);
+                startTimerRef.current = null;
+            }, START_DELAY);
+        }
+    } else { // Silence is detected
+        if (startTimerRef.current) {
+            clearTimeout(startTimerRef.current);
+            startTimerRef.current = null;
+        }
+        if (isSoundDetected && !stopTimerRef.current) {
+            stopTimerRef.current = setTimeout(() => {
+                setIsSoundDetected(false);
+                stopTimerRef.current = null;
+            }, STOP_DELAY);
+        }
     }
 
     animationFrameRef.current = requestAnimationFrame(monitor);
@@ -89,16 +92,16 @@ export function useSoundStatus(): UseSoundStatusResult {
       sourceRef.current = null;
     }
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close();
+      audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
     if (startTimerRef.current) clearTimeout(startTimerRef.current);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     
     analyserRef.current = null;
-    setIsSoundDetected(undefined);
-    setError(null);
-  }, []);
+    if(isSoundDetected !== undefined) setIsSoundDetected(undefined);
+    if(error !== null) setError(null);
+  }, [isSoundDetected, error]);
 
 
   const start = useCallback(async () => {
@@ -122,8 +125,12 @@ export function useSoundStatus(): UseSoundStatusResult {
       const source = context.createMediaStreamSource(stream);
       source.connect(analyser);
       sourceRef.current = source;
-
-      setIsSoundDetected(false); // Start with silence
+      
+      // Initial state before detection starts
+      if (isSoundDetected === undefined) {
+         setIsSoundDetected(false);
+      }
+      
       animationFrameRef.current = requestAnimationFrame(monitor);
 
     } catch (err) {
@@ -139,7 +146,7 @@ export function useSoundStatus(): UseSoundStatusResult {
       }
       stop(); // Clean up on error
     }
-  }, [monitor, stop]);
+  }, [monitor, stop, isSoundDetected]);
 
   // Cleanup on unmount
   useEffect(() => {
