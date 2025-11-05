@@ -3,8 +3,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 // --- Configuration ---
-// The threshold (in dB) to consider sound as "detected". Adjust this based on testing.
-const LOUDNESS_THRESHOLD = -45; // in dBFS (decibels relative to full scale)
 // The time in milliseconds the sound needs to be above threshold to be considered "started".
 const START_DELAY = 500;
 // The time in milliseconds the sound needs to be below threshold to be considered "stopped".
@@ -17,7 +15,7 @@ interface UseSoundStatusResult {
   stop: () => void;
 }
 
-export function useSoundStatus(): UseSoundStatusResult {
+export function useSoundStatus(threshold: number): UseSoundStatusResult {
   const [isSoundDetected, setIsSoundDetected] = useState<boolean | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   
@@ -67,10 +65,10 @@ export function useSoundStatus(): UseSoundStatusResult {
     const rms = Math.sqrt(sumSquares / dataArray.length);
     const db = 20 * Math.log10(rms);
 
-    updateSoundStatus(db > LOUDNESS_THRESHOLD);
+    updateSoundStatus(db > threshold);
 
     animationFrameRef.current = requestAnimationFrame(monitor);
-  }, [updateSoundStatus]);
+  }, [updateSoundStatus, threshold]);
 
 
   const stop = useCallback(() => {

@@ -9,10 +9,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff, Mic, MicOff, Volume2 } from 'lucide-react';
+import { Zap, ZapOff, Mic, MicOff } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
@@ -74,6 +75,8 @@ export default function Home() {
   
   const [useSoundControl, setUseSoundControl] = useState(false);
   const [isMicActive, setIsMicActive] = useState(true);
+  const [loudnessThreshold, setLoudnessThreshold] = useState(-45);
+
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -181,7 +184,7 @@ export default function Home() {
   }, [powerEventsRef, toast, user]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
-  const { isSoundDetected, error: soundError, start: startSoundCheck, stop: stopSoundCheck } = useSoundStatus();
+  const { isSoundDetected, error: soundError, start: startSoundCheck, stop: stopSoundCheck } = useSoundStatus(loudnessThreshold);
 
   useEffect(() => {
     if (useSoundControl && isMicActive) {
@@ -464,6 +467,20 @@ export default function Home() {
               <Switch id="sound-control" checked={useSoundControl} onCheckedChange={setUseSoundControl} />
               <Label htmlFor="sound-control">Control via Sound</Label>
             </div>
+            {useSoundControl && (
+              <div className="grid gap-2 pt-2">
+                <Label htmlFor="loudness">Loudness Threshold ({loudnessThreshold} dB)</Label>
+                <Slider
+                  id="loudness"
+                  min={-60}
+                  max={-20}
+                  step={1}
+                  value={[loudnessThreshold]}
+                  onValueChange={(value) => setLoudnessThreshold(value[0])}
+                />
+                <p className="text-xs text-muted-foreground">Set how loud the sound must be to start the timer. More negative is more sensitive.</p>
+              </div>
+            )}
              {soundError && <p className="text-xs text-destructive">{soundError}</p>}
           </CardContent>
           <CardFooter>
