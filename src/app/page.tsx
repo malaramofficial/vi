@@ -30,14 +30,34 @@ export default function Home() {
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handlePowerStatusChange = useCallback((event: PowerEvent) => {
+  // Sound effects
+  const powerOffSoundRef = useRef<Tone.Player | null>(null);
+  const powerOnSoundRef = useRef<Tone.Synth | null>(null);
+
+  useEffect(() => {
+    // Initialize sounds
+    powerOffSoundRef.current = new Tone.Player("/beep.mp3").toDestination();
+    powerOnSoundRef.current = new Tone.Synth({
+      oscillator: { type: 'sine' },
+      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
+    }).toDestination();
+  }, []);
+
+  const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     setPowerEventLog(prevLog => [...prevLog, event]);
     
+    await Tone.start();
+    if (event.status === 'offline') {
+      powerOffSoundRef.current?.start();
+    } else {
+      powerOnSoundRef.current?.triggerAttackRelease("C5", "8n");
+    }
+
     Notification.requestPermission().then(permission => {
       if (permission === 'granted') {
         new Notification('Vidyut Sahayak', {
           body: event.status === 'online' ? 'Power has been restored.' : 'Power outage detected.',
-          icon: event.status === 'online' ? '/zap.svg' : '/zap-off.svg', // These icons need to be in /public
+          icon: event.status === 'online' ? '/zap.svg' : '/zap-off.svg',
         });
       }
     });
@@ -204,7 +224,7 @@ export default function Home() {
         <AnalysisSheet log={powerEventLog} />
       </header>
 
-      <main className="w-full max-w-md">
+      <main className="w-full max-w-md flex flex-col items-center">
         <div className="flex justify-center items-center gap-4 mb-4">
             <h1 className="text-3xl font-bold text-center text-primary">Vidyut Sahayak</h1>
             <PowerStatus isOnline={isPowerOnline} />
@@ -216,6 +236,12 @@ export default function Home() {
           Power status is based on your device's charging state.
         </p>
       </main>
+
+      <footer className="absolute bottom-4 text-center">
+        <p className="text-sm text-muted-foreground" style={{fontFamily: 'cursive', fontSize: '1rem'}}>
+          Developed by Mala Ram Godara
+        </p>
+      </footer>
     </div>
   );
 }
