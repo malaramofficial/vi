@@ -51,6 +51,10 @@ service cloud.firestore {
       allow create: if isOwner(userId) && request.resource.data.id == userId;
       allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
       allow delete: if isExistingOwner(userId);
+
+      match /powerEvents/{eventId} {
+        allow read, create: if isOwner(userId);
+      }
     }
 
     /**
@@ -121,6 +125,10 @@ service cloud.firestore {
       allow create: if isSignedIn();
       allow update: if false;
       allow delete: if false;
+    }
+
+    match /timers/{userId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }

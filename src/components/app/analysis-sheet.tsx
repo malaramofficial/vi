@@ -12,18 +12,22 @@ import { getPowerOutageAnalysis } from '@/app/actions';
 import type { PowerEvent } from '@/hooks/use-power-status';
 import type { AnalyzePowerOutageTrendsOutput } from '@/ai/flows/analyze-power-outage-trends';
 import { formatDistanceToNow } from 'date-fns';
+import { useFirestore, useUser, useCollection, useMemoFirebase } from '@/firebase';
+import { collection } from 'firebase/firestore';
 
 
-type AnalysisSheetProps = {
-  log: PowerEvent[];
-};
+export function AnalysisSheet() {
+  const firestore = useFirestore();
+  const { user } = useUser();
+  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
+  const { data: log, isLoading: isLogLoading } = useCollection<PowerEvent>(powerEventsRef);
 
-export function AnalysisSheet({ log }: AnalysisSheetProps) {
   const [analysis, setAnalysis] = useState<AnalyzePowerOutageTrendsOutput | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = async () => {
+    if (!log) return;
     setIsLoading(true);
     setError(null);
     setAnalysis(null);
@@ -72,9 +76,10 @@ export function AnalysisSheet({ log }: AnalysisSheetProps) {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {log.length > 0 ? (
+                  {isLogLoading && <p>Loading log...</p>}
+                  {log && log.length > 0 ? (
                     <ul className="space-y-2 text-sm">
-                      {[...log].reverse().map((event, index) => (
+                      {[...log].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((event, index) => (
                         <li key={index} className="flex items-center justify-between">
                           <span className={`font-medium ${event.status === 'online' ? 'text-green-500' : 'text-destructive'}`}>
                             {event.status === 'online' ? 'Power ON' : 'Power OFF'}
@@ -86,7 +91,7 @@ export function AnalysisSheet({ log }: AnalysisSheetProps) {
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-muted-foreground text-sm">No power events recorded yet.</p>
+                    !isLogLoading && <p className="text-muted-foreground text-sm">No power events recorded yet.</p>
                   )}
                 </CardContent>
               </Card>
@@ -138,7 +143,7 @@ export function AnalysisSheet({ log }: AnalysisSheetProps) {
           </ScrollArea>
         </div>
         <SheetFooter className="pt-4">
-          <Button onClick={handleAnalyze} disabled={isLoading || log.length < 2} className="w-full">
+          <Button onClick={handleAnalyze} disabled={isLoading || !log || log.length < 2} className="w-full">
             {isLoading ? "Analyzing..." : "Analyze with AI"}
           </Button>
         </SheetFooter>

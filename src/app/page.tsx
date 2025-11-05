@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as Tone from 'tone';
-import usePersistedState from '@/hooks/use-persisted-state';
 import { usePowerStatus, type PowerEvent } from '@/hooks/use-power-status';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,15 +11,31 @@ import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
 import { Zap, ZapOff } from 'lucide-react';
+import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
+import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
+import { doc, setDoc, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+
 
 type TimerMode = 'idle' | 'running' | 'paused' | 'finished';
 
-export default function Home() {
-  const [timerMode, setTimerMode] = usePersistedState<TimerMode>('timer-mode', 'idle');
-  const [totalDuration, setTotalDuration] = usePersistedState('timer-total-duration', 0);
-  const [remainingTime, setRemainingTime] = usePersistedState('timer-remaining-time', 0);
-  const [powerEventLog, setPowerEventLog] = usePersistedState<PowerEvent[]>('power-event-log', []);
+type TimerData = {
+  timerMode: TimerMode;
+  totalDuration: number;
+  remainingTime: number;
+  updatedAt: any;
+};
 
+export default function Home() {
+  const auth = useAuth();
+  const firestore = useFirestore();
+  const { user, isUserLoading } = useUser();
+
+  const userTimerRef = useMemoFirebase(() => user ? doc(firestore, 'timers', user.uid) : null, [firestore, user]);
+  const { data: timerData, isLoading: isTimerLoading } = useDoc<TimerData>(userTimerRef);
+
+  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
+  
   const [hours, setHours] = useState('0');
   const [minutes, setMinutes] = useState('30');
   
@@ -29,6 +44,7 @@ export default function Home() {
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const localTimerRef = useRef<number | null>(null);
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
@@ -45,15 +61,41 @@ export default function Home() {
       envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
     }).toDestination();
   }, []);
+  
+  useEffect(() => {
+    if (!isUserLoading && !user) {
+      initiateAnonymousSignIn(auth);
+    }
+  }, [isUserLoading, user, auth]);
+
+  const updateTimerState = (newState: Partial<TimerData>) => {
+    if (userTimerRef) {
+      const data = {
+        ...newState,
+        updatedAt: serverTimestamp()
+      }
+      setDocumentNonBlocking(userTimerRef, data, { merge: true });
+    }
+  };
+  
+  const timerMode = timerData?.timerMode ?? 'idle';
+  const totalDuration = timerData?.totalDuration ?? 0;
+  const remainingTime = timerData?.remainingTime ?? 0;
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
-    setPowerEventLog(prevLog => [...prevLog, event]);
+    if (powerEventsRef) {
+      addDocumentNonBlocking(powerEventsRef, event);
+    }
     
     await Tone.start();
     if (event.status === 'offline') {
-      powerOffSoundRef.current?.triggerAttackRelease("C4", "8n");
+      if (powerOffSoundRef.current) {
+        powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
+      }
     } else {
-      powerOnSoundRef.current?.triggerAttackRelease("C5", "8n");
+      if (powerOnSoundRef.current) {
+        powerOnSoundRef.current.triggerAttackRelease('C5', '8n');
+      }
     }
 
     Notification.requestPermission().then(permission => {
@@ -70,7 +112,7 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [setPowerEventLog, toast]);
+  }, [powerEventsRef, toast]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
@@ -83,35 +125,42 @@ export default function Home() {
 
   const startTimerInterval = () => {
     stopTimerInterval();
+    localTimerRef.current = remainingTime;
     intervalRef.current = setInterval(() => {
-      setRemainingTime(prev => {
-        if (prev <= 1) {
-          stopTimerInterval();
-          setTimerMode('finished');
-          return 0;
+      localTimerRef.current = (localTimerRef.current ?? 0) - 1;
+      if ((localTimerRef.current ?? 0) <= 0) {
+        stopTimerInterval();
+        updateTimerState({ remainingTime: 0, timerMode: 'finished' });
+      } else {
+        // Periodically sync with firestore
+        if ((localTimerRef.current ?? 0) % 5 === 0) {
+             updateTimerState({ remainingTime: localTimerRef.current });
         }
-        return prev - 1;
-      });
+      }
     }, 1000);
   };
   
   useEffect(() => {
     if (isPowerOnline === undefined) return;
-
-    if (timerMode === 'running' && !isPowerOnline) {
-      setTimerMode('paused');
-    } else if (timerMode === 'paused' && isPowerOnline) {
-      setTimerMode('running');
+    // Only master device controls the state
+    if (isPowerOnline) {
+      if (timerMode === 'paused') {
+        updateTimerState({ timerMode: 'running' });
+      }
+    } else {
+      if (timerMode === 'running') {
+        updateTimerState({ timerMode: 'paused' });
+      }
     }
-  }, [isPowerOnline, timerMode, setTimerMode]);
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPowerOnline]);
+  
   useEffect(() => {
     if (timerMode === 'running') {
       startTimerInterval();
     } else {
       stopTimerInterval();
     }
-
     return stopTimerInterval;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerMode]);
@@ -126,7 +175,9 @@ export default function Home() {
         setAlarm(alarmSynth);
         setLfo(alarmLfo);
       };
-      initAlarm();
+      if (!alarm && !lfo) {
+        initAlarm();
+      }
     } else {
       if (alarm) {
         alarm.stop();
@@ -146,20 +197,24 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      setTotalDuration(durationInSeconds);
-      setRemainingTime(durationInSeconds);
-      setTimerMode(isPowerOnline ? 'running' : 'paused');
+      updateTimerState({
+        totalDuration: durationInSeconds,
+        remainingTime: durationInSeconds,
+        timerMode: isPowerOnline ? 'running' : 'paused'
+      });
     }
   };
 
   const handleReset = () => {
-    setTimerMode('idle');
-    setRemainingTime(0);
-    setTotalDuration(0);
+    updateTimerState({
+      timerMode: 'idle',
+      remainingTime: 0,
+      totalDuration: 0,
+    });
   };
 
   const handleStopAlarm = () => {
-    setTimerMode('idle');
+    updateTimerState({ timerMode: 'idle' });
   };
 
   const formatTime = (seconds: number) => {
@@ -168,8 +223,20 @@ export default function Home() {
     const s = seconds % 60;
     return [h, m, s].map(v => v.toString().padStart(2, '0')).join(':');
   };
+  
+  const displayTime = localTimerRef.current !== null && timerMode === 'running' 
+    ? localTimerRef.current 
+    : remainingTime;
+
 
   const renderContent = () => {
+    if (isTimerLoading || isUserLoading) {
+        return (
+             <CardContent className="flex items-center justify-center p-6">
+                <p>Loading...</p>
+             </CardContent>
+        )
+    }
     if (timerMode === 'idle') {
       return (
         <>
@@ -206,10 +273,10 @@ export default function Home() {
         </CardHeader>
         <CardContent className="flex flex-col items-center justify-center p-6">
           <div className="text-6xl md:text-8xl font-black font-mono tracking-tighter tabular-nums text-primary">
-            {formatTime(remainingTime)}
+            {formatTime(displayTime)}
           </div>
           <div className="w-full bg-muted rounded-full h-2.5 mt-6 overflow-hidden">
-            <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(remainingTime / totalDuration) * 100}%` }}></div>
+            <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / totalDuration) * 100}%` }}></div>
           </div>
         </CardContent>
         <CardFooter>
@@ -229,7 +296,7 @@ export default function Home() {
       )}
 
       <header className="absolute top-4 right-4 z-10">
-        <AnalysisSheet log={powerEventLog} />
+        <AnalysisSheet />
       </header>
 
       <main className="w-full max-w-md flex flex-col items-center">
