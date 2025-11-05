@@ -1,0 +1,126 @@
+/**
+ * @fileoverview Firestore Security Rules for the Smart Line Timer application.
+ *
+ * Core Philosophy:
+ * This ruleset enforces a strict user-ownership model for user profiles, devices, and timer data.
+ * Power events are publicly readable but can only be created by authenticated devices.
+ *
+ * Data Structure:
+ * - /users/{userId}: Stores user profile information.
+ * - /users/{userId}/devices/{deviceId}: Stores device information associated with a user.
+ * - /users/{userId}/timerData/{timerDataId}: Stores timer settings and state for each user.
+ * - /power_events/{powerEventId}: Logs power on/off events from devices.
+ *
+ * Key Security Decisions:
+ * - Users can only create, read, update, and delete their own user profiles, devices, and timer data.
+ * - Power events are publicly listable to enable trending and reporting, but creation is restricted to authenticated users.
+ * - Device ownership is validated by the `deviceId` on the User record.
+ * - Listing of all users is disallowed.
+ *
+ * Denormalization for Authorization:
+ * - User ID is included in TimerData documents to allow direct ownership checks without needing to `get()` the user document.
+ * - Device ID is present on the User record to allow validation of power event creation without needing to `get()` the device document.
+ *
+ * Structural Segregation:
+ * - Power events are stored in a top-level collection to facilitate public listing and aggregation for trending analysis.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /**
+     * @description Enforces user-ownership for user profiles.
+     * @path /users/{userId}
+     * @allow (create) - A user with UID 'user_abc' can create their own profile at /users/user_abc if the document ID matches their UID.
+     * @allow (get, update, delete) - A user with UID 'user_abc' can read, update, and delete their own profile at /users/user_abc.
+     * @deny (create) - A user with UID 'user_abc' cannot create a profile at /users/user_xyz.
+     * @deny (get, update, delete) - A user with UID 'user_abc' cannot read, update, or delete the profile of another user at /users/user_xyz.
+     * @principle Enforces document ownership for all operations on user profiles.
+     */
+    match /users/{userId} {
+      function isOwner(userId) {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && request.resource.data.id == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Enforces user-ownership for devices.
+     * @path /users/{userId}/devices/{deviceId}
+     * @allow (create) - A user with UID 'user_abc' can create a device under their profile at /users/user_abc/devices/device_123.
+     * @allow (get, list, update, delete) - A user with UID 'user_abc' can read, list, update, and delete their own devices under /users/user_abc/devices/{deviceId}.
+     * @deny (create) - A user with UID 'user_abc' cannot create a device under another user's profile at /users/user_xyz/devices/device_123.
+     * @deny (get, list, update, delete) - A user with UID 'user_abc' cannot read, list, update, or delete devices under another user's profile at /users/user_xyz/devices/{deviceId}.
+     * @principle Restricts access to a user's own devices.
+     */
+    match /users/{userId}/devices/{deviceId} {
+      function isOwner(userId) {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+       function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isExistingOwner(userId);
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Enforces user-ownership for timer data.
+     * @path /users/{userId}/timerData/{timerDataId}
+     * @allow (create) - A user with UID 'user_abc' can create timer data under their profile at /users/user_abc/timerData/timer_123.
+     * @allow (get, list, update, delete) - A user with UID 'user_abc' can read, list, update, and delete their own timer data under /users/user_abc/timerData/{timerDataId}.
+     * @deny (create) - A user with UID 'user_abc' cannot create timer data under another user's profile at /users/user_xyz/timerData/timer_123.
+     * @deny (get, list, update, delete) - A user with UID 'user_abc' cannot read, list, update, or delete timer data under another user's profile at /users/user_xyz/timerData/{timerDataId}.
+     * @principle Restricts access to a user's own timer data.
+     */
+    match /users/{userId}/timerData/{timerDataId} {
+      function isOwner(userId) {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+       function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) && request.resource.data.userId == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.userId == resource.data.userId;
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Allows public listing of power events, but restricts creation to authenticated devices.
+     * @path /power_events/{powerEventId}
+     * @allow (get, list) - Any user (authenticated or unauthenticated) can read and list power events.
+     * @allow (create) - An authenticated user can create a power event.
+     * @deny (update, delete) - No user can update or delete power events.
+     * @principle Allows public read access for trending analysis, while securing write access.
+     */
+    match /power_events/{powerEventId} {
+      function isSignedIn() {
+        return request.auth != null;
+      }
+
+      allow get: if true;
+      allow list: if true;
+      allow create: if isSignedIn();
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

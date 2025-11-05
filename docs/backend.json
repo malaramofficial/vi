@@ -1,0 +1,230 @@
+{
+  "entities": {
+    "TimerData": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "TimerData",
+      "type": "object",
+      "description": "Stores timer settings and state for each user.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the timer data record."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Reference to User. (Relationship: User 1:N TimerData)"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "description": "The set duration of the timer in seconds."
+        },
+        "startTime": {
+          "type": "string",
+          "description": "The timestamp when the timer was started or resumed.",
+          "format": "date-time"
+        },
+        "remainingSeconds": {
+          "type": "number",
+          "description": "The remaining time on the timer in seconds."
+        },
+        "isPaused": {
+          "type": "boolean",
+          "description": "Indicates whether the timer is currently paused."
+        },
+        "isCompleted": {
+          "type": "boolean",
+          "description": "Indicates whether the timer has completed its duration."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "durationSeconds",
+        "remainingSeconds",
+        "isPaused",
+        "isCompleted"
+      ]
+    },
+    "PowerEvent": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "PowerEvent",
+      "type": "object",
+      "description": "Logs power on/off events with timestamps.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the power event record."
+        },
+        "deviceId": {
+          "type": "string",
+          "description": "The unique identifier of the device that detected the event."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "The timestamp of when the power event occurred.",
+          "format": "date-time"
+        },
+        "eventType": {
+          "type": "string",
+          "description": "The type of power event (e.g., 'POWER_ON', 'POWER_OFF')."
+        }
+      },
+      "required": [
+        "id",
+        "deviceId",
+        "timestamp",
+        "eventType"
+      ]
+    },
+    "User": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "User",
+      "type": "object",
+      "description": "Stores user profile information.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the user."
+        },
+        "email": {
+          "type": "string",
+          "description": "User's email address.",
+          "format": "email"
+        },
+        "notificationToken": {
+          "type": "string",
+          "description": "Firebase Cloud Messaging token for push notifications."
+        },
+        "customAlarmSound": {
+          "type": "string",
+          "description": "URL or reference to the user's custom alarm sound.",
+          "format": "uri"
+        },
+        "deviceId": {
+          "type": "string",
+          "description": "The unique identifier of the primary device associated with the user."
+        }
+      },
+      "required": [
+        "id",
+        "email"
+      ]
+    },
+    "Device": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Device",
+      "type": "object",
+      "description": "Stores device-specific information including the secondary device's association to the primary device.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the device."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Reference to User. (Relationship: User 1:N Device)"
+        },
+        "name": {
+          "type": "string",
+          "description": "The name of the device."
+        },
+        "type": {
+          "type": "string",
+          "description": "The type of device (e.g., 'primary', 'secondary')."
+        },
+        "primaryDeviceId": {
+          "type": "string",
+          "description": "Reference to the primary device.  Used when the device is 'secondary'."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "type"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}",
+        "definition": {
+          "entityName": "User",
+          "schema": {
+            "$ref": "#/backend/entities/User"
+          },
+          "description": "Stores user profile information. Includes 'deviceId' to associate the user with a specific device.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/devices/{deviceId}",
+        "definition": {
+          "entityName": "Device",
+          "schema": {
+            "$ref": "#/backend/entities/Device"
+          },
+          "description": "Stores device-specific information, nested under the user.  Allows a user to have multiple devices (primary and secondary).",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user."
+            },
+            {
+              "name": "deviceId",
+              "description": "The unique identifier for the device."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/timerData/{timerDataId}",
+        "definition": {
+          "entityName": "TimerData",
+          "schema": {
+            "$ref": "#/backend/entities/TimerData"
+          },
+          "description": "Stores timer settings and state for each user, nested under the user.  Enables path-based authorization.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user."
+            },
+            {
+              "name": "timerDataId",
+              "description": "The unique identifier for the timer data record."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/power_events/{powerEventId}",
+        "definition": {
+          "entityName": "PowerEvent",
+          "schema": {
+            "$ref": "#/backend/entities/PowerEvent"
+          },
+          "description": "Logs power on/off events.  The 'deviceId' field is used to associate events with a specific device.  Events are stored in a top-level collection to allow aggregation for the trend analysis feature.",
+          "params": [
+            {
+              "name": "powerEventId",
+              "description": "The unique identifier for the power event record."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The Firestore structure is designed to support the 'Smart Line Timer' application, focusing on automatic timer control based on power status. The design prioritizes authorization independence and efficient querying. We are creating paths for `users`, `devices`, `timerData`, and `powerEvents`. Power events are stored under a dedicated collection to facilitate analysis and potential forecasting, which is also mentioned in the requirements.\n\n**Authorization Independence:** User-owned data (TimerData, Devices) is nested under `/users/{userId}`, enforcing path-based ownership. This eliminates the need for `get()` calls in security rules to validate ownership. The device ID is stored on the User and used in the `/power_events` collection to avoid hierarchical dependencies.\n\n**QAPs:**\n*   **List PowerEvents:** The `/power_events` collection allows listing of all power events, which is critical to the trending and reporting features.\n*   **User-specific Timer Data:** The nesting of `timerData` under `/users/{userId}` allows for secure and efficient retrieval of timer settings for a specific user, ensuring that users can only access their own timer data."
+  }
+}
