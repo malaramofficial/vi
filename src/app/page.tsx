@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Zap, ZapOff, Volume2 } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
-import { doc, serverTimestamp, collection } from 'firebase/firestore';
+import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { getSpokenTime } from './actions';
 
@@ -23,7 +23,9 @@ type TimerMode = 'idle' | 'running' | 'paused' | 'finished';
 type TimerData = {
   timerMode: TimerMode;
   totalDuration: number;
-  remainingTime: number;
+  startTime: Timestamp | null;
+  pauseTime: Timestamp | null;
+  accumulatedPauseTime: number; // in seconds
   updatedAt: any;
 };
 
@@ -35,19 +37,21 @@ export default function Home() {
   const userTimerRef = useMemoFirebase(() => user ? doc(firestore, 'timers', user.uid) : null, [firestore, user]);
   const { data: timerData, isLoading: isTimerLoading } = useDoc<TimerData>(userTimerRef);
 
-  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
-  
+  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'power_events') : null, [firestore, user]);
+
   const [hours, setHours] = useState('0');
   const [minutes, setMinutes] = useState('30');
   
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
-  const [announcementAudio, setAnnouncementAudio] = useState<HTMLAudioElement | null>(null);
+  const [announcementAudio, setAnnouncementAudio] = useState<AudioBufferSourceNode | null>(null);
   const [isAnnouncing, setIsAnnouncing] = useState(false);
   const [displayTime, setDisplayTime] = useState(0);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastAnnouncementTimeRef = useRef<number | null>(null);
+
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
@@ -86,12 +90,11 @@ export default function Home() {
   };
   
   const timerMode = timerData?.timerMode ?? 'idle';
-  const totalDuration = timerData?.totalDuration ?? 0;
-  const remainingTime = timerData?.remainingTime ?? 0;
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
-    if (powerEventsRef) {
-      addDocumentNonBlocking(powerEventsRef, event);
+    if (powerEventsRef && user) {
+        const eventData = { ...event, userId: user.uid, deviceId: 'TBD' };
+        addDocumentNonBlocking(powerEventsRef, eventData);
     }
     
     await Tone.start();
@@ -116,13 +119,12 @@ export default function Home() {
       });
     }
 
-
     toast({
       title: event.status === 'online' ? 'Power Restored' : 'Power Outage',
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [powerEventsRef, toast]);
+  }, [powerEventsRef, toast, user]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
@@ -134,18 +136,41 @@ export default function Home() {
       const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
 
       try {
+        await Tone.start();
         const result = await getSpokenTime(textToSpeak);
         if (result && result.media) {
-          const audio = new Audio(result.media);
-          setAnnouncementAudio(audio);
-          audio.play();
-          audio.onended = () => setIsAnnouncing(false);
+            const audioContext = Tone.getContext().rawContext;
+            const audioData = atob(result.media.split(',')[1]);
+            const arrayBuffer = new ArrayBuffer(audioData.length);
+            const uint8Array = new Uint8Array(arrayBuffer);
+            for (let i = 0; i < audioData.length; i++) {
+                uint8Array[i] = audioData.charCodeAt(i);
+            }
+
+            const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
+            
+            // Boost volume
+            Tone.getDestination().volume.value = 6; // Boost volume by 6 dB
+
+            const source = audioContext.createBufferSource();
+            source.buffer = decodedAudio;
+            source.connect(audioContext.destination);
+            source.start(0);
+            setAnnouncementAudio(source);
+
+            source.onended = () => {
+                setIsAnnouncing(false);
+                setAnnouncementAudio(null);
+                // Reset volume
+                Tone.getDestination().volume.value = 0;
+            };
         } else {
           setIsAnnouncing(false);
         }
       } catch (error) {
         console.error("Failed to get spoken time:", error);
         setIsAnnouncing(false);
+        Tone.getDestination().volume.value = 0; // Reset volume on error
       }
     }, [isAnnouncing]);
 
@@ -159,61 +184,112 @@ export default function Home() {
 
   const startTimerInterval = useCallback(() => {
     stopTimerInterval();
-    
-    let localTime = remainingTime;
-    let lastAnnouncementTime = localTime;
-    setDisplayTime(localTime);
+    if (!timerData) return;
 
-    // Initial announcement
-    if (localTime > 0) {
-      makeAnnouncement(localTime);
-    }
-    
+    lastAnnouncementTimeRef.current = null; // Reset announcement timer
+
     intervalRef.current = setInterval(() => {
-      localTime--;
-      setDisplayTime(localTime);
-
-      // Announce every 15 minutes (900 seconds)
-      if (lastAnnouncementTime - localTime >= 900) {
-        makeAnnouncement(localTime);
-        lastAnnouncementTime = localTime;
-      }
-
-      if (localTime <= 0) {
-        stopTimerInterval();
-        updateTimerState({ remainingTime: 0, timerMode: 'finished' });
-      } else {
-        if (localTime % 5 === 0) {
-          updateTimerState({ remainingTime: localTime });
+        if (!timerData?.startTime) {
+            setDisplayTime(0);
+            return;
         }
-      }
+
+        const now = Date.now();
+        const serverStartTime = timerData.startTime.toDate().getTime();
+        
+        let elapsedSeconds = (now - serverStartTime) / 1000;
+        
+        // Adjust for pauses
+        elapsedSeconds -= timerData.accumulatedPauseTime || 0;
+        
+        // If it's currently paused, calculate how long it's been paused in this session
+        if (timerMode === 'paused' && timerData.pauseTime) {
+             const serverPauseTime = timerData.pauseTime.toDate().getTime();
+             const currentPauseDuration = (now - serverPauseTime) / 1000;
+             elapsedSeconds -= currentPauseDuration;
+        }
+
+        const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
+        setDisplayTime(remaining);
+
+        // Announce every 15 minutes (900 seconds)
+        if (lastAnnouncementTimeRef.current === null) {
+            lastAnnouncementTimeRef.current = remaining;
+            makeAnnouncement(remaining);
+        } else if (lastAnnouncementTimeRef.current - remaining >= 900) {
+            makeAnnouncement(remaining);
+            lastAnnouncementTimeRef.current = remaining;
+        }
+
+        if (remaining <= 0) {
+            stopTimerInterval();
+            updateTimerState({ timerMode: 'finished' });
+        }
     }, 1000);
-  }, [remainingTime, makeAnnouncement]); 
+  }, [timerData, timerMode, makeAnnouncement, updateTimerState]); 
   
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
 
     if (isPowerOnline) {
+      // Power is ON
       if (timerMode === 'paused') {
-        updateTimerState({ timerMode: 'running' });
+        // Resuming from a pause
+        const now = serverTimestamp();
+        let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
+        if (timerData.pauseTime) {
+            // It's better to calculate this on server, but for client-side only:
+            // This is an approximation. For real precision, cloud function would be better.
+            const pauseDuration = (new Date().getTime() - timerData.pauseTime.toDate().getTime()) / 1000;
+            newAccumulatedPauseTime += pauseDuration;
+        }
+        updateTimerState({ 
+            timerMode: 'running', 
+            pauseTime: null,
+            accumulatedPauseTime: newAccumulatedPauseTime
+        });
       }
     } else {
+      // Power is OFF
       if (timerMode === 'running') {
-        stopTimerInterval(); 
-        updateTimerState({ timerMode: 'paused', remainingTime: displayTime });
+        // Pausing the timer
+        updateTimerState({ 
+            timerMode: 'paused',
+            pauseTime: serverTimestamp() as unknown as Timestamp,
+        });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPowerOnline, isTimerLoading, timerData]); 
+  }, [isPowerOnline, isTimerLoading, timerData?.timerMode]); 
   
   useEffect(() => {
     if (timerMode === 'running') {
       startTimerInterval();
     } else {
       stopTimerInterval();
-      setDisplayTime(remainingTime);
+      // When not running, calculate display time once
+      if (timerData?.startTime) {
+          const now = Date.now();
+          const serverStartTime = timerData.startTime.toDate().getTime();
+          let elapsedSeconds = (now - serverStartTime) / 1000;
+          elapsedSeconds -= timerData.accumulatedPauseTime || 0;
+
+          if(timerMode === 'paused' && timerData.pauseTime) {
+              const serverPauseTime = timerData.pauseTime.toDate().getTime();
+              const currentPauseDuration = (now - serverPauseTime) / 1000;
+              elapsedSeconds -= currentPauseDuration;
+          }
+          
+          const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
+          setDisplayTime(remaining);
+      } else if (timerData?.totalDuration) {
+          setDisplayTime(timerData.totalDuration);
+      } else {
+          setDisplayTime(0);
+      }
+
       if (announcementAudio) {
-        announcementAudio.pause();
+        announcementAudio.stop();
         setAnnouncementAudio(null);
       }
     }
@@ -221,13 +297,8 @@ export default function Home() {
         stopTimerInterval();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode, startTimerInterval]);
+  }, [timerMode, timerData?.startTime, timerData?.totalDuration, timerData?.accumulatedPauseTime, timerData?.pauseTime]);
 
-  useEffect(() => {
-    if (timerMode !== 'running') {
-      setDisplayTime(remainingTime);
-    }
-  }, [remainingTime, timerMode]);
 
   useEffect(() => {
     if (timerMode === 'finished') {
@@ -261,10 +332,11 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      setDisplayTime(durationInSeconds);
       updateTimerState({
         totalDuration: durationInSeconds,
-        remainingTime: durationInSeconds,
+        startTime: serverTimestamp() as unknown as Timestamp,
+        pauseTime: null,
+        accumulatedPauseTime: 0,
         timerMode: isPowerOnline ? 'running' : 'paused'
       });
     }
@@ -273,9 +345,12 @@ export default function Home() {
   const handleReset = () => {
     updateTimerState({
       timerMode: 'idle',
-      remainingTime: 0,
       totalDuration: 0,
+      startTime: null,
+      pauseTime: null,
+      accumulatedPauseTime: 0
     });
+    setDisplayTime(0);
   };
 
   const handleStopAlarm = () => {
@@ -286,7 +361,7 @@ export default function Home() {
     if (seconds < 0) seconds = 0;
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
+    const s = Math.floor(seconds % 60);
     return [h, m, s].map(v => v.toString().padStart(2, '0')).join(':');
   };
   
@@ -337,7 +412,7 @@ export default function Home() {
             {formatTime(displayTime)}
           </div>
           <div className="w-full bg-muted rounded-full h-2.5 mt-6 overflow-hidden">
-            <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / totalDuration) * 100}%` }}></div>
+            <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / (timerData?.totalDuration || 1)) * 100}%` }}></div>
           </div>
            {timerMode === 'running' && (
             <Button onClick={() => makeAnnouncement(displayTime)} disabled={isAnnouncing} variant="outline" size="sm" className="mt-6">
@@ -387,5 +462,7 @@ export default function Home() {
     </div>
   );
 }
+
+    
 
     
