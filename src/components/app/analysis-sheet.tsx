@@ -76,7 +76,7 @@ export function AnalysisSheet({ log }: AnalysisSheetProps) {
                     <ul className="space-y-2 text-sm">
                       {[...log].reverse().map((event, index) => (
                         <li key={index} className="flex items-center justify-between">
-                          <span className={`font-medium ${event.status === 'online' ? 'text-accent' : 'text-destructive'}`}>
+                          <span className={`font-medium ${event.status === 'online' ? 'text-green-500' : 'text-destructive'}`}>
                             {event.status === 'online' ? 'Power ON' : 'Power OFF'}
                           </span>
                           <span className="text-muted-foreground">

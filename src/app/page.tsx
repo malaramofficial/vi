@@ -45,7 +45,7 @@ export default function Home() {
     toast({
       title: event.status === 'online' ? 'Power Restored' : 'Power Outage',
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
-      action: event.status === 'online' ? <Zap className="text-accent" /> : <ZapOff className="text-destructive" />,
+      action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
   }, [setPowerEventLog, toast]);
   
@@ -192,7 +192,7 @@ export default function Home() {
   };
   
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-background dark:bg-black">
+    <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-background">
       {timerMode === 'finished' && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center animation-flash">
           <h1 className="text-6xl font-bold text-destructive-foreground animate-pulse">TIME'S UP!</h1>

@@ -18,7 +18,7 @@ export function PowerStatus({ isOnline }: PowerStatusProps) {
 
   const statusText = isOnline ? 'Power On' : 'Power Off';
   const Icon = isOnline ? Zap : ZapOff;
-  const colorClass = isOnline ? 'text-accent' : 'text-destructive';
+  const colorClass = isOnline ? 'text-green-500' : 'text-destructive';
 
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
