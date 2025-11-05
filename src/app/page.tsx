@@ -10,12 +10,11 @@ import { Label } from '@/components/ui/label';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff, Volume2 } from 'lucide-react';
+import { Zap, ZapOff } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
-import { getSpokenTime } from './actions';
 
 
 type TimerMode = 'idle' | 'running' | 'paused' | 'finished' | 'break';
@@ -46,19 +45,18 @@ export default function Home() {
   
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
-  const [announcementAudio, setAnnouncementAudio] = useState<AudioBufferSourceNode | null>(null);
-  const [isAnnouncing, setIsAnnouncing] = useState(false);
   const [displayTime, setDisplayTime] = useState(0);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const lastAnnouncementTimeRef = useRef<number | null>(null);
   const audioStarted = useRef(false);
+  const lastBellIntervalRef = useRef(0);
 
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
   const powerOnSoundRef = useRef<Tone.Synth | null>(null);
+  const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
 
   useEffect(() => {
     if (!audioStarted.current) return;
@@ -74,7 +72,17 @@ export default function Home() {
         envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
       }).toDestination();
     }
-  }, []);
+    if (!bellSoundRef.current) {
+      bellSoundRef.current = new Tone.MetalSynth({
+        frequency: 250,
+        envelope: { attack: 0.001, decay: 1.4, release: 0.2 },
+        harmonicity: 5.1,
+        modulationIndex: 32,
+        resonance: 4000,
+        octaves: 1.5,
+      }).toDestination();
+    }
+  }, [audioStarted.current]);
   
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -96,8 +104,12 @@ export default function Home() {
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!audioStarted.current) {
+      try {
         await Tone.start();
         audioStarted.current = true;
+      } catch (e) {
+        console.error("Audio could not start: ", e);
+      }
     }
     
     if (powerEventsRef && user) {
@@ -134,53 +146,13 @@ export default function Home() {
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
-  const makeAnnouncement = useCallback(async (timeInSeconds: number) => {
-      if (timeInSeconds <= 0 || isAnnouncing) return;
-      
-      if (!audioStarted.current) {
-        await Tone.start();
-        audioStarted.current = true;
-      }
-      
-      setIsAnnouncing(true);
-      const remainingMinutes = Math.ceil(timeInSeconds / 60);
-      const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
-
-      try {
-        const result = await getSpokenTime(textToSpeak);
-        if (result && result.media) {
-            const audioContext = Tone.getContext().rawContext;
-            const audioData = atob(result.media.split(',')[1]);
-            const arrayBuffer = new ArrayBuffer(audioData.length);
-            const uint8Array = new Uint8Array(arrayBuffer);
-            for (let i = 0; i < audioData.length; i++) {
-                uint8Array[i] = audioData.charCodeAt(i);
-            }
-
-            const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
-            
-            Tone.getDestination().volume.value = 6;
-
-            const source = audioContext.createBufferSource();
-            source.buffer = decodedAudio;
-            source.connect(audioContext.destination);
-            source.start(0);
-            setAnnouncementAudio(source);
-
-            source.onended = () => {
-                setIsAnnouncing(false);
-                setAnnouncementAudio(null);
-                Tone.getDestination().volume.value = 0;
-            };
-        } else {
-          setIsAnnouncing(false);
-        }
-      } catch (error) {
-        console.error("Failed to get spoken time:", error);
-        setIsAnnouncing(false);
-        Tone.getDestination().volume.value = 0;
-      }
-    }, [isAnnouncing]);
+   const playBellSequence = useCallback((count: number) => {
+    if (!bellSoundRef.current) return;
+    const now = Tone.now();
+    for (let i = 0; i < count; i++) {
+      bellSoundRef.current.triggerAttack(now + i * 0.8);
+    }
+  }, []);
 
 
   const stopTimerInterval = () => {
@@ -194,7 +166,7 @@ export default function Home() {
     stopTimerInterval();
     if (!timerData) return;
 
-    lastAnnouncementTimeRef.current = null; 
+    lastBellIntervalRef.current = 0;
 
     intervalRef.current = setInterval(() => {
         if (!timerData?.startTime) {
@@ -202,7 +174,6 @@ export default function Home() {
             return;
         }
 
-        let localTime = displayTime;
         const now = Date.now();
         const serverStartTime = timerData.startTime.toDate().getTime();
         
@@ -217,15 +188,17 @@ export default function Home() {
         }
 
         const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
-        localTime = remaining;
         setDisplayTime(remaining);
 
-        if (lastAnnouncementTimeRef.current === null) {
-            lastAnnouncementTimeRef.current = localTime;
-        } else if (lastAnnouncementTimeRef.current - localTime >= 900) { // 15 minutes
-            makeAnnouncement(localTime);
-            lastAnnouncementTimeRef.current = localTime;
+        // Bell logic
+        const totalElapsedForBell = timerData.totalDuration - remaining;
+        const currentInterval = Math.floor(totalElapsedForBell / 900); // 900 seconds = 15 minutes
+
+        if (currentInterval > 0 && currentInterval > lastBellIntervalRef.current) {
+            playBellSequence(currentInterval);
+            lastBellIntervalRef.current = currentInterval;
         }
+
 
         if (remaining <= 0 && timerMode === 'running') {
             stopTimerInterval();
@@ -252,7 +225,7 @@ export default function Home() {
             }
         }
     }, 1000);
-  }, [timerData, timerMode, makeAnnouncement, updateTimerState, displayTime, isPowerOnline]); 
+  }, [timerData, timerMode, updateTimerState, isPowerOnline, playBellSequence]); 
   
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
@@ -309,11 +282,6 @@ export default function Home() {
               setDisplayTime(0);
           }
       }
-
-      if (announcementAudio) {
-        announcementAudio.stop();
-        setAnnouncementAudio(null);
-      }
     }
     return () => {
         stopTimerInterval();
@@ -326,8 +294,12 @@ export default function Home() {
     if (timerMode === 'finished') {
       const initAlarm = async () => {
         if (!audioStarted.current) {
+          try {
             await Tone.start();
             audioStarted.current = true;
+          } catch (e) {
+            console.error("Audio could not start: ", e);
+          }
         };
         const alarmSynth = new Tone.PulseOscillator('C4', 0.4).toDestination();
         const alarmLfo = new Tone.LFO(5, 400, 4000).connect(alarmSynth.frequency).start();
@@ -358,8 +330,18 @@ export default function Home() {
     
     if (durationInSeconds > 0) {
       if (!audioStarted.current) {
-        await Tone.start();
-        audioStarted.current = true;
+        try {
+            await Tone.start();
+            audioStarted.current = true;
+        } catch (e) {
+            console.error("Audio could not start: ", e);
+            toast({
+                variant: "destructive",
+                title: "Audio Error",
+                description: "Could not start audio. Please interact with the page and try again.",
+            });
+            return;
+        }
       }
       
       const newTimerData: Partial<TimerData> = {
@@ -477,12 +459,6 @@ export default function Home() {
           <div className="w-full bg-muted rounded-full h-2.5 mt-6 overflow-hidden">
             <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / (timerData?.totalDuration || 1)) * 100}%` }}></div>
           </div>
-           {timerMode === 'running' && (
-            <Button onClick={() => makeAnnouncement(displayTime)} disabled={isAnnouncing} variant="outline" size="sm" className="mt-6">
-              <Volume2 className="mr-2 h-4 w-4" />
-              {isAnnouncing ? 'Announcing...' : 'Announce Time'}
-            </Button>
-          )}
         </CardContent>
         <CardFooter>
           <Button onClick={handleReset} variant="destructive" className="w-full">Cancel and Reset</Button>
