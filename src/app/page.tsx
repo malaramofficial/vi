@@ -48,8 +48,6 @@ export default function Home() {
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const announcementIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
@@ -128,39 +126,11 @@ export default function Home() {
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
-  const stopTimerInterval = () => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-  };
-
-  const startTimerInterval = useCallback(() => {
-    stopTimerInterval();
-    
-    let localTime = remainingTime;
-    setDisplayTime(localTime);
-
-    intervalRef.current = setInterval(() => {
-      localTime--;
-      setDisplayTime(localTime);
-
-      if (localTime <= 0) {
-        stopTimerInterval();
-        updateTimerState({ remainingTime: 0, timerMode: 'finished' });
-      } else {
-        if (localTime % 5 === 0) {
-          updateTimerState({ remainingTime: localTime });
-        }
-      }
-    }, 1000);
-  }, [remainingTime]); // Only depends on the initial remainingTime from Firestore
-  
-  const makeAnnouncement = useCallback(async () => {
-      if (displayTime <= 0 || isAnnouncing) return;
+  const makeAnnouncement = useCallback(async (timeInSeconds: number) => {
+      if (timeInSeconds <= 0 || isAnnouncing) return;
       
       setIsAnnouncing(true);
-      const remainingMinutes = Math.ceil(displayTime / 60);
+      const remainingMinutes = Math.ceil(timeInSeconds / 60);
       const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
 
       try {
@@ -177,22 +147,49 @@ export default function Home() {
         console.error("Failed to get spoken time:", error);
         setIsAnnouncing(false);
       }
-    }, [isAnnouncing, displayTime]);
+    }, [isAnnouncing]);
 
-  const stopAnnouncementInterval = () => {
-    if (announcementIntervalRef.current) {
-      clearInterval(announcementIntervalRef.current);
-      announcementIntervalRef.current = null;
+
+  const stopTimerInterval = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
     }
   };
 
-  const startAnnouncementInterval = useCallback(() => {
-    stopAnnouncementInterval();
+  const startTimerInterval = useCallback(() => {
+    stopTimerInterval();
     
-    makeAnnouncement(); 
-    announcementIntervalRef.current = setInterval(makeAnnouncement, 15 * 60 * 1000);
-  }, [makeAnnouncement]);
+    let localTime = remainingTime;
+    let lastAnnouncementTime = localTime;
+    setDisplayTime(localTime);
 
+    // Initial announcement
+    if (localTime > 0) {
+      makeAnnouncement(localTime);
+    }
+    
+    intervalRef.current = setInterval(() => {
+      localTime--;
+      setDisplayTime(localTime);
+
+      // Announce every 15 minutes (900 seconds)
+      if (lastAnnouncementTime - localTime >= 900) {
+        makeAnnouncement(localTime);
+        lastAnnouncementTime = localTime;
+      }
+
+      if (localTime <= 0) {
+        stopTimerInterval();
+        updateTimerState({ remainingTime: 0, timerMode: 'finished' });
+      } else {
+        if (localTime % 5 === 0) {
+          updateTimerState({ remainingTime: localTime });
+        }
+      }
+    }, 1000);
+  }, [remainingTime, makeAnnouncement]); 
+  
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
 
@@ -202,8 +199,8 @@ export default function Home() {
       }
     } else {
       if (timerMode === 'running') {
-        stopTimerInterval(); // Stop the interval immediately on power loss
-        updateTimerState({ timerMode: 'paused', remainingTime: displayTime > 0 ? displayTime : remainingTime });
+        stopTimerInterval(); 
+        updateTimerState({ timerMode: 'paused', remainingTime: displayTime });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -212,11 +209,9 @@ export default function Home() {
   useEffect(() => {
     if (timerMode === 'running') {
       startTimerInterval();
-      startAnnouncementInterval();
     } else {
       stopTimerInterval();
-      stopAnnouncementInterval();
-      setDisplayTime(remainingTime); // Sync display time when not running
+      setDisplayTime(remainingTime);
       if (announcementAudio) {
         announcementAudio.pause();
         setAnnouncementAudio(null);
@@ -224,12 +219,10 @@ export default function Home() {
     }
     return () => {
         stopTimerInterval();
-        stopAnnouncementInterval();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerMode, startTimerInterval]);
 
-  // Sync display time initially and when remainingTime from firestore changes while not running
   useEffect(() => {
     if (timerMode !== 'running') {
       setDisplayTime(remainingTime);
@@ -290,6 +283,7 @@ export default function Home() {
   };
 
   const formatTime = (seconds: number) => {
+    if (seconds < 0) seconds = 0;
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = seconds % 60;
@@ -346,7 +340,7 @@ export default function Home() {
             <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / totalDuration) * 100}%` }}></div>
           </div>
            {timerMode === 'running' && (
-            <Button onClick={makeAnnouncement} disabled={isAnnouncing} variant="outline" size="sm" className="mt-6">
+            <Button onClick={() => makeAnnouncement(displayTime)} disabled={isAnnouncing} variant="outline" size="sm" className="mt-6">
               <Volume2 className="mr-2 h-4 w-4" />
               {isAnnouncing ? 'Announcing...' : 'Announce Time'}
             </Button>
@@ -393,3 +387,5 @@ export default function Home() {
     </div>
   );
 }
+
+    
