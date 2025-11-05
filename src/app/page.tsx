@@ -3,21 +3,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as Tone from 'tone';
 import { usePowerStatus, type PowerEvent } from '@/hooks/use-power-status';
-import { useSoundStatus } from '@/hooks/use-sound-status';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff, Mic, MicOff } from 'lucide-react';
+import { Zap, ZapOff, Bell, BellOff, Play, Power, X } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
-
+import { cn } from '@/lib/utils';
 
 type TimerMode = 'idle' | 'running' | 'paused' | 'finished' | 'break';
 
@@ -32,27 +30,42 @@ type TimerData = {
   updatedAt: any;
 };
 
-const StatusIndicator = ({ isActive, activeText, inactiveText, IconOn, IconOff }: { isActive: boolean | undefined, activeText: string, inactiveText: string, IconOn: React.ElementType, IconOff: React.ElementType }) => {
-  if (isActive === undefined) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
-        <IconOn className="h-5 w-5 animate-pulse" />
-        <span>Checking...</span>
+const TimerDisplay = ({ time, progress, timerMode }: { time: string, progress: number, timerMode: TimerMode }) => (
+  <div className="relative flex items-center justify-center w-64 h-64">
+    <svg className="absolute w-full h-full" viewBox="0 0 100 100">
+      <circle
+        className="text-muted/20"
+        stroke="currentColor"
+        strokeWidth="4"
+        cx="50"
+        cy="50"
+        r="46"
+        fill="transparent"
+      />
+      <circle
+        className="text-primary transition-all duration-1000 ease-linear"
+        stroke="currentColor"
+        strokeWidth="4"
+        strokeLinecap="round"
+        cx="50"
+        cy="50"
+        r="46"
+        fill="transparent"
+        strokeDasharray={2 * Math.PI * 46}
+        strokeDashoffset={2 * Math.PI * 46 * (1 - progress)}
+        transform="rotate(-90 50 50)"
+      />
+    </svg>
+    <div className="z-10 text-center">
+      <div className="text-5xl font-black font-mono tracking-tighter tabular-nums text-primary">
+        {time}
       </div>
-    );
-  }
-
-  const statusText = isActive ? activeText : inactiveText;
-  const Icon = isActive ? IconOn : IconOff;
-  const colorClass = isActive ? 'text-green-500' : 'text-destructive';
-
-  return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
-      <Icon className={`h-5 w-5 ${colorClass}`} />
-      <span>{statusText}</span>
+      <p className="text-sm font-medium uppercase tracking-wider text-muted-foreground mt-1">
+        {timerMode === 'paused' ? 'Paused' : 'Remaining'}
+      </p>
     </div>
-  );
-};
+  </div>
+);
 
 
 export default function Home() {
@@ -71,9 +84,6 @@ export default function Home() {
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
   const [displayTime, setDisplayTime] = useState(0);
-  
-  const [useSoundControl, setUseSoundControl] = useState(false);
-  const [isMicActive, setIsMicActive] = useState(true);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -95,13 +105,6 @@ export default function Home() {
   }, []);
 
   const timerMode = timerData?.timerMode ?? 'idle';
-
-  useEffect(() => {
-    if (timerMode === 'running' && !audioContextStarted.current) {
-        startAudioContext();
-    }
-  }, [timerMode, startAudioContext]);
-
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
@@ -181,28 +184,14 @@ export default function Home() {
   }, [powerEventsRef, toast, user]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
-  const { isSoundDetected, error: soundError, start: startSoundCheck, stop: stopSoundCheck } = useSoundStatus();
 
-  useEffect(() => {
-    if (useSoundControl && isMicActive) {
-      startSoundCheck();
-    } else {
-      stopSoundCheck();
-    }
-    return () => stopSoundCheck();
-  }, [useSoundControl, isMicActive, startSoundCheck, stopSoundCheck]);
-
-  const isTimerActiveSource = useSoundControl ? (isMicActive && isSoundDetected) : isPowerOnline;
-
-
-   const playBellSequence = useCallback((count: number) => {
+  const playBellSequence = useCallback((count: number) => {
     if (!bellSoundRef.current || !audioContextStarted.current) return;
     const now = Tone.now();
     for (let i = 0; i < count; i++) {
       bellSoundRef.current.triggerAttack(now + i * 0.8);
     }
   }, []);
-
 
   const stopTimerInterval = () => {
     if (intervalRef.current) {
@@ -248,7 +237,6 @@ export default function Home() {
             lastBellIntervalRef.current = currentInterval;
         }
 
-
         if (remaining <= 0 && timerMode === 'running') {
             stopTimerInterval();
             updateTimerState({ timerMode: 'finished' });
@@ -265,25 +253,24 @@ export default function Home() {
                     pauseTime: null,
                     accumulatedPauseTime: 0,
                     breakStartTime: null,
-                    timerMode: isTimerActiveSource ? 'running' : 'paused'
+                    timerMode: isPowerOnline ? 'running' : 'paused'
                 };
-                if (!isTimerActiveSource) {
+                if (!isPowerOnline) {
                     newTimerData.pauseTime = serverTimestamp() as unknown as Timestamp;
                 }
                 updateTimerState(newTimerData);
             }
         }
     }, 1000);
-  }, [timerData, timerMode, updateTimerState, isTimerActiveSource, playBellSequence]); 
+  }, [timerData, timerMode, updateTimerState, isPowerOnline, playBellSequence]); 
   
   useEffect(() => {
-    if (isTimerActiveSource === undefined || isTimerLoading || !timerData || !timerData.timerMode) return;
+    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode) return;
 
-    // Only react to source changes if the timer is in a state that should be auto-managed
-    if (timerData?.timerMode !== 'running' && timerData?.timerMode !== 'paused') return;
+    if (timerData.timerMode !== 'running' && timerData.timerMode !== 'paused') return;
 
-    if (isTimerActiveSource) {
-      if (timerData?.timerMode === 'paused') {
+    if (isPowerOnline) {
+      if (timerData.timerMode === 'paused') {
         const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
         if (timerData.pauseTime) {
@@ -297,15 +284,14 @@ export default function Home() {
         });
       }
     } else {
-      if (timerData?.timerMode === 'running') {
+      if (timerData.timerMode === 'running') {
         updateTimerState({ 
             timerMode: 'paused',
             pauseTime: serverTimestamp() as unknown as Timestamp,
         });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTimerActiveSource, isTimerLoading, timerData?.timerMode]); 
+  }, [isPowerOnline, isTimerLoading, timerData?.timerMode]); 
   
   useEffect(() => {
     if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
@@ -314,7 +300,6 @@ export default function Home() {
       stopTimerInterval();
     }
     
-    // When timer is not active, set initial display time
     if (timerMode === 'idle' || timerMode === 'finished') {
        if (timerData?.lastSetDuration && timerMode === 'idle') {
            setDisplayTime(timerData.lastSetDuration);
@@ -323,12 +308,8 @@ export default function Home() {
        }
     }
 
-    return () => {
-        stopTimerInterval();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => stopTimerInterval();
   }, [timerMode, timerData, startTimerInterval]);
-
 
   useEffect(() => {
     if (timerMode === 'finished') {
@@ -353,8 +334,7 @@ export default function Home() {
         setLfo(null);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode, startAudioContext]);
+  }, [timerMode, startAudioContext, alarm, lfo]);
 
   const handleStartTimer = async () => {
     await startAudioContext();
@@ -364,8 +344,6 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      setIsMicActive(true); 
-      
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
         lastSetDuration: durationInSeconds,
@@ -373,10 +351,10 @@ export default function Home() {
         pauseTime: null,
         accumulatedPauseTime: 0,
         breakStartTime: null,
-        timerMode: isTimerActiveSource ? 'running' : 'paused'
+        timerMode: isPowerOnline ? 'running' : 'paused'
       };
 
-      if(!isTimerActiveSource){
+      if(!isPowerOnline){
         newTimerData.pauseTime = serverTimestamp() as unknown as Timestamp;
       }
       
@@ -415,7 +393,7 @@ export default function Home() {
   const renderContent = () => {
     if (isTimerLoading || isUserLoading) {
         return (
-             <CardContent className="flex items-center justify-center p-6 h-64">
+             <CardContent className="flex items-center justify-center p-6 h-[450px]">
                 <p>Loading...</p>
              </CardContent>
         )
@@ -426,15 +404,19 @@ export default function Home() {
         <>
           <CardHeader>
             <CardTitle>Break Time</CardTitle>
-            <CardDescription>Next timer starts in...</CardDescription>
+            <CardDescription>Next timer will start automatically.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col items-center justify-center p-6">
-            <div className="text-6xl md:text-8xl font-black font-mono tracking-tighter tabular-nums text-primary">
-              {formatTime(displayTime)}
-            </div>
+            <TimerDisplay 
+              time={formatTime(displayTime)} 
+              progress={displayTime / 120} 
+              timerMode={timerMode} 
+            />
           </CardContent>
           <CardFooter>
-            <Button onClick={handleReset} variant="destructive" className="w-full">Cancel Next Timer</Button>
+            <Button onClick={handleReset} variant="destructive" className="w-full">
+              <X className="mr-2 h-4 w-4" /> Cancel Next Timer
+            </Button>
           </CardFooter>
         </>
       );
@@ -443,31 +425,29 @@ export default function Home() {
     if (timerMode === 'idle') {
       return (
         <>
-          <CardHeader>
+          <CardHeader className="text-center">
             <CardTitle>Set Timer Duration</CardTitle>
             <CardDescription>
-              {useSoundControl ? "Timer will run when sound is detected." : "Timer will run when power is available."}
+              Timer pauses automatically on power outage.
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="flex items-end gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="hours">Hours</Label>
-                <Input id="hours" type="number" value={hours} onChange={(e) => setHours(e.target.value)} min="0" />
+          <CardContent className="grid gap-6">
+            <div className="flex items-center justify-center gap-4">
+              <div className="grid gap-2 text-center">
+                <Label htmlFor="hours" className="text-sm">Hours</Label>
+                <Input id="hours" type="number" value={hours} onChange={(e) => setHours(e.target.value)} min="0" className="w-24 text-center text-2xl h-16"/>
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="minutes">Minutes</Label>
-                <Input id="minutes" type="number" value={minutes} onChange={(e) => setMinutes(e.target.value)} min="0" max="59"/>
+              <div className="text-4xl font-bold text-muted-foreground pt-8">:</div>
+              <div className="grid gap-2 text-center">
+                <Label htmlFor="minutes" className="text-sm">Minutes</Label>
+                <Input id="minutes" type="number" value={minutes} onChange={(e) => setMinutes(e.target.value)} min="0" max="59" className="w-24 text-center text-2xl h-16"/>
               </div>
             </div>
-            <div className="flex items-center space-x-2">
-              <Switch id="sound-control" checked={useSoundControl} onCheckedChange={setUseSoundControl} />
-              <Label htmlFor="sound-control">Control via Sound</Label>
-            </div>
-             {soundError && <p className="text-xs text-destructive">{soundError}</p>}
           </CardContent>
           <CardFooter>
-            <Button onClick={handleStartTimer} className="w-full">Start Timer</Button>
+            <Button onClick={handleStartTimer} className="w-full" size="lg">
+              <Play className="mr-2 h-5 w-5" /> Start Timer
+            </Button>
           </CardFooter>
         </>
       );
@@ -475,36 +455,38 @@ export default function Home() {
 
     return (
       <>
-        <CardHeader>
-          <CardTitle>Timer Running</CardTitle>
-          <CardDescription>
-            {timerMode === 'paused' 
-              ? (useSoundControl ? 'Timer paused due to silence.' : 'Timer is paused due to power outage.')
-              : 'Timer is active.'
-            }
-          </CardDescription>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Timer Active</CardTitle>
+          <PowerStatus isOnline={isPowerOnline} />
         </CardHeader>
         <CardContent className="flex flex-col items-center justify-center p-6">
-          <div className="text-6xl md:text-8xl font-black font-mono tracking-tighter tabular-nums text-primary">
-            {formatTime(displayTime)}
-          </div>
-          <div className="w-full bg-muted rounded-full h-2.5 mt-6 overflow-hidden">
-            <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / (timerData?.totalDuration || 1)) * 100}%` }}></div>
+          <TimerDisplay 
+            time={formatTime(displayTime)} 
+            progress={displayTime / (timerData?.totalDuration || 1)} 
+            timerMode={timerMode} 
+          />
+          <div className="flex items-center gap-4 mt-6 text-sm text-muted-foreground">
+              <Bell className="h-4 w-4" />
+              <span>Rings every 15 minutes</span>
           </div>
         </CardContent>
         <CardFooter>
-          <Button onClick={handleReset} variant="destructive" className="w-full">Cancel and Reset</Button>
+          <Button onClick={handleReset} variant="destructive" className="w-full">
+            <Power className="mr-2 h-4 w-4" /> Cancel and Reset
+          </Button>
         </CardFooter>
       </>
     );
   };
   
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-background">
+    <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-radial">
       {timerMode === 'finished' && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center animation-flash">
           <h1 className="text-6xl font-bold text-destructive-foreground animate-pulse">TIME'S UP!</h1>
-          <Button onClick={handleStopAlarm} size="lg" className="mt-8">Stop Alarm</Button>
+          <Button onClick={handleStopAlarm} size="lg" className="mt-8">
+            <BellOff className="mr-2 h-5 w-5" /> Stop Alarm
+          </Button>
         </div>
       )}
 
@@ -513,28 +495,12 @@ export default function Home() {
       </header>
 
       <main className="w-full max-w-md flex flex-col items-center">
-        <div className="flex justify-center items-center gap-4 mb-4">
-            <h1 className="text-3xl font-bold text-center text-primary">Vidyut Sahayak</h1>
-             {timerMode !== 'idle' && useSoundControl ? (
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="icon" onClick={() => setIsMicActive(!isMicActive)} className="h-8 w-8">
-                    {isMicActive ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4 text-destructive" />}
-                    <span className="sr-only">Toggle Microphone</span>
-                  </Button>
-                  <StatusIndicator isActive={isMicActive ? isSoundDetected : false} activeText="Sound" inactiveText="Silence" IconOn={Mic} IconOff={MicOff} />
-                </div>
-              ) : (
-                <PowerStatus isOnline={isPowerOnline} />
-              )}
-        </div>
-        <Card className="w-full shadow-2xl">
+        <h1 className="text-4xl font-black text-center text-primary mb-2">Vidyut Sahayak</h1>
+        <p className="text-center text-muted-foreground mb-6">The Smart Line Timer</p>
+
+        <Card className="w-full shadow-2xl bg-card/80 backdrop-blur-sm border-white/10">
           {renderContent()}
         </Card>
-        <p className="text-xs text-muted-foreground text-center mt-4">
-           {useSoundControl
-            ? "Status is based on microphone input."
-            : "Power status is based on your device's charging state."}
-        </p>
       </main>
 
       <footer className="absolute bottom-4 text-center">
