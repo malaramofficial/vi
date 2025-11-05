@@ -18,14 +18,16 @@ import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-b
 import { getSpokenTime } from './actions';
 
 
-type TimerMode = 'idle' | 'running' | 'paused' | 'finished';
+type TimerMode = 'idle' | 'running' | 'paused' | 'finished' | 'break';
 
 type TimerData = {
   timerMode: TimerMode;
   totalDuration: number;
+  lastSetDuration: number;
   startTime: Timestamp | null;
   pauseTime: Timestamp | null;
   accumulatedPauseTime: number; // in seconds
+  breakStartTime: Timestamp | null;
   updatedAt: any;
 };
 
@@ -59,7 +61,7 @@ export default function Home() {
   const powerOnSoundRef = useRef<Tone.Synth | null>(null);
 
   useEffect(() => {
-    // Initialize sounds only once
+    if (!audioStarted.current) return;
     if (!powerOffSoundRef.current) {
       powerOffSoundRef.current = new Tone.Synth({
         oscillator: { type: 'square' },
@@ -93,6 +95,11 @@ export default function Home() {
   const timerMode = timerData?.timerMode ?? 'idle';
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
+    if (!audioStarted.current) {
+        await Tone.start();
+        audioStarted.current = true;
+    }
+    
     if (powerEventsRef && user) {
         addDocumentNonBlocking(collection(powerEventsRef.firestore, 'power_events'), { ...event, userId: user.uid, deviceId: 'TBD' });
     }
@@ -130,6 +137,11 @@ export default function Home() {
   const makeAnnouncement = useCallback(async (timeInSeconds: number) => {
       if (timeInSeconds <= 0 || isAnnouncing) return;
       
+      if (!audioStarted.current) {
+        await Tone.start();
+        audioStarted.current = true;
+      }
+      
       setIsAnnouncing(true);
       const remainingMinutes = Math.ceil(timeInSeconds / 60);
       const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
@@ -147,8 +159,7 @@ export default function Home() {
 
             const decodedAudio = await audioContext.decodeAudioData(arrayBuffer);
             
-            // Boost volume
-            Tone.getDestination().volume.value = 6; // Boost volume by 6 dB
+            Tone.getDestination().volume.value = 6;
 
             const source = audioContext.createBufferSource();
             source.buffer = decodedAudio;
@@ -159,7 +170,6 @@ export default function Home() {
             source.onended = () => {
                 setIsAnnouncing(false);
                 setAnnouncementAudio(null);
-                // Reset volume
                 Tone.getDestination().volume.value = 0;
             };
         } else {
@@ -168,7 +178,7 @@ export default function Home() {
       } catch (error) {
         console.error("Failed to get spoken time:", error);
         setIsAnnouncing(false);
-        Tone.getDestination().volume.value = 0; // Reset volume on error
+        Tone.getDestination().volume.value = 0;
       }
     }, [isAnnouncing]);
 
@@ -192,6 +202,7 @@ export default function Home() {
             return;
         }
 
+        let localTime = displayTime;
         const now = Date.now();
         const serverStartTime = timerData.startTime.toDate().getTime();
         
@@ -206,21 +217,42 @@ export default function Home() {
         }
 
         const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
+        localTime = remaining;
         setDisplayTime(remaining);
 
         if (lastAnnouncementTimeRef.current === null) {
-            lastAnnouncementTimeRef.current = remaining;
-        } else if (lastAnnouncementTimeRef.current - remaining >= 900) {
-            makeAnnouncement(remaining);
-            lastAnnouncementTimeRef.current = remaining;
+            lastAnnouncementTimeRef.current = localTime;
+        } else if (lastAnnouncementTimeRef.current - localTime >= 900) { // 15 minutes
+            makeAnnouncement(localTime);
+            lastAnnouncementTimeRef.current = localTime;
         }
 
-        if (remaining <= 0) {
+        if (remaining <= 0 && timerMode === 'running') {
             stopTimerInterval();
             updateTimerState({ timerMode: 'finished' });
+        } else if (timerMode === 'break' && timerData.breakStartTime) {
+            const breakStart = timerData.breakStartTime.toDate().getTime();
+            const breakElapsed = (now - breakStart) / 1000;
+            const breakRemaining = Math.max(0, 120 - breakElapsed); // 2 minutes break
+            setDisplayTime(breakRemaining);
+            if (breakRemaining <= 0) {
+                stopTimerInterval();
+                const newTimerData: Partial<TimerData> = {
+                    totalDuration: timerData.lastSetDuration,
+                    startTime: serverTimestamp() as unknown as Timestamp,
+                    pauseTime: null,
+                    accumulatedPauseTime: 0,
+                    breakStartTime: null,
+                    timerMode: isPowerOnline ? 'running' : 'paused'
+                };
+                if (!isPowerOnline) {
+                    newTimerData.pauseTime = serverTimestamp() as unknown as Timestamp;
+                }
+                updateTimerState(newTimerData);
+            }
         }
     }, 1000);
-  }, [timerData, timerMode, makeAnnouncement, updateTimerState]); 
+  }, [timerData, timerMode, makeAnnouncement, updateTimerState, displayTime, isPowerOnline]); 
   
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
@@ -251,29 +283,31 @@ export default function Home() {
   }, [isPowerOnline, isTimerLoading, timerData?.timerMode]); 
   
   useEffect(() => {
-    if (timerMode === 'running') {
+    if (timerMode === 'running' || timerMode === 'break') {
       startTimerInterval();
     } else {
       stopTimerInterval();
-      // When not running, calculate display time once based on server data
-      if (timerData?.startTime && timerData.totalDuration > 0) {
-          const now = Date.now();
-          const serverStartTime = timerData.startTime.toDate().getTime();
-          let elapsedSeconds = (now - serverStartTime) / 1000;
-          elapsedSeconds -= timerData.accumulatedPauseTime || 0;
+      if (timerMode !== 'finished') {
+          // When not running, calculate display time once based on server data
+          if (timerData?.startTime && timerData.totalDuration > 0) {
+              const now = Date.now();
+              const serverStartTime = timerData.startTime.toDate().getTime();
+              let elapsedSeconds = (now - serverStartTime) / 1000;
+              elapsedSeconds -= timerData.accumulatedPauseTime || 0;
 
-          if(timerMode === 'paused' && timerData.pauseTime) {
-              const serverPauseTime = timerData.pauseTime.toDate().getTime();
-              const currentPauseDuration = (now - serverPauseTime) / 1000;
-              elapsedSeconds -= currentPauseDuration;
+              if(timerMode === 'paused' && timerData.pauseTime) {
+                  const serverPauseTime = timerData.pauseTime.toDate().getTime();
+                  const currentPauseDuration = (now - serverPauseTime) / 1000;
+                  elapsedSeconds -= currentPauseDuration;
+              }
+              
+              const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
+              setDisplayTime(remaining);
+          } else if (timerData?.totalDuration) {
+              setDisplayTime(timerData.totalDuration);
+          } else {
+              setDisplayTime(0);
           }
-          
-          const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
-          setDisplayTime(remaining);
-      } else if (timerData?.totalDuration) {
-          setDisplayTime(timerData.totalDuration);
-      } else {
-          setDisplayTime(0);
       }
 
       if (announcementAudio) {
@@ -285,13 +319,16 @@ export default function Home() {
         stopTimerInterval();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode, timerData?.startTime, timerData?.totalDuration, timerData?.accumulatedPauseTime, timerData?.pauseTime]);
+  }, [timerMode, timerData?.startTime, timerData?.totalDuration, timerData?.accumulatedPauseTime, timerData?.pauseTime, timerData?.breakStartTime]);
 
 
   useEffect(() => {
     if (timerMode === 'finished') {
       const initAlarm = async () => {
-        if (!audioStarted.current) return;
+        if (!audioStarted.current) {
+            await Tone.start();
+            audioStarted.current = true;
+        };
         const alarmSynth = new Tone.PulseOscillator('C4', 0.4).toDestination();
         const alarmLfo = new Tone.LFO(5, 400, 4000).connect(alarmSynth.frequency).start();
         alarmSynth.start();
@@ -327,9 +364,11 @@ export default function Home() {
       
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
+        lastSetDuration: durationInSeconds,
         startTime: serverTimestamp() as unknown as Timestamp,
         pauseTime: null,
         accumulatedPauseTime: 0,
+        breakStartTime: null,
         timerMode: isPowerOnline ? 'running' : 'paused'
       };
 
@@ -347,13 +386,18 @@ export default function Home() {
       totalDuration: 0,
       startTime: null,
       pauseTime: null,
-      accumulatedPauseTime: 0
+      accumulatedPauseTime: 0,
+      breakStartTime: null,
+      lastSetDuration: 0,
     });
     setDisplayTime(0);
   };
 
   const handleStopAlarm = () => {
-    updateTimerState({ timerMode: 'idle' });
+    updateTimerState({ 
+        timerMode: 'break',
+        breakStartTime: serverTimestamp() as unknown as Timestamp,
+    });
   };
 
   const formatTime = (seconds: number) => {
@@ -372,6 +416,26 @@ export default function Home() {
              </CardContent>
         )
     }
+
+    if (timerMode === 'break') {
+      return (
+        <>
+          <CardHeader>
+            <CardTitle>Break Time</CardTitle>
+            <CardDescription>Next timer starts in...</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col items-center justify-center p-6">
+            <div className="text-6xl md:text-8xl font-black font-mono tracking-tighter tabular-nums text-primary">
+              {formatTime(displayTime)}
+            </div>
+          </CardContent>
+          <CardFooter>
+            <Button onClick={handleReset} variant="destructive" className="w-full">Cancel Next Timer</Button>
+          </CardFooter>
+        </>
+      );
+    }
+
     if (timerMode === 'idle') {
       return (
         <>
@@ -461,5 +525,3 @@ export default function Home() {
     </div>
   );
 }
-
-    
