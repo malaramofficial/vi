@@ -128,12 +128,17 @@ export default function Home() {
       };
       initAlarm();
     } else {
-      if (alarm) alarm.stop();
-      if (lfo) lfo.stop();
-      setAlarm(null);
-      setLfo(null);
+      if (alarm) {
+        alarm.stop();
+        setAlarm(null);
+      }
+      if (lfo) {
+        lfo.stop();
+        setLfo(null);
+      }
     }
-  }, [timerMode, alarm, lfo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timerMode]);
 
   const handleStartTimer = () => {
     const h = parseInt(hours, 10) || 0;
