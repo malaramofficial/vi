@@ -3,14 +3,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as Tone from 'tone';
 import { usePowerStatus, type PowerEvent } from '@/hooks/use-power-status';
+import { useSoundStatus } from '@/hooks/use-sound-status';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff } from 'lucide-react';
+import { Zap, ZapOff, Mic, MicOff } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
@@ -30,6 +32,29 @@ type TimerData = {
   updatedAt: any;
 };
 
+const StatusIndicator = ({ isActive, activeText, inactiveText, IconOn, IconOff }: { isActive: boolean | undefined, activeText: string, inactiveText: string, IconOn: React.ElementType, IconOff: React.ElementType }) => {
+  if (isActive === undefined) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
+        <IconOn className="h-5 w-5 animate-pulse" />
+        <span>Checking...</span>
+      </div>
+    );
+  }
+
+  const statusText = isActive ? activeText : inactiveText;
+  const Icon = isActive ? IconOn : IconOff;
+  const colorClass = isActive ? 'text-green-500' : 'text-destructive';
+
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
+      <Icon className={`h-5 w-5 ${colorClass}`} />
+      <span>{statusText}</span>
+    </div>
+  );
+};
+
+
 export default function Home() {
   const auth = useAuth();
   const firestore = useFirestore();
@@ -46,11 +71,29 @@ export default function Home() {
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
   const [displayTime, setDisplayTime] = useState(0);
+  
+  const [useSoundControl, setUseSoundControl] = useState(false);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const audioStarted = useRef(false);
+  const audioContextStarted = useRef(false);
   const lastBellIntervalRef = useRef(0);
+
+  const startAudioContext = useCallback(async () => {
+    if (audioContextStarted.current) return;
+    try {
+      await Tone.start();
+      audioContextStarted.current = true;
+      console.log("Audio context started successfully.");
+    } catch (e) {
+      console.error("Audio could not start: ", e);
+      toast({
+          variant: "destructive",
+          title: "Audio Error",
+          description: "Could not start audio. Please interact with the page and try again.",
+      });
+    }
+  }, [toast]);
 
 
   // Sound effects
@@ -59,7 +102,7 @@ export default function Home() {
   const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
 
   useEffect(() => {
-    if (!audioStarted.current) return;
+    if (!audioContextStarted.current) return;
     if (!powerOffSoundRef.current) {
       powerOffSoundRef.current = new Tone.Synth({
         oscillator: { type: 'square' },
@@ -82,7 +125,7 @@ export default function Home() {
         octaves: 1.5,
       }).toDestination();
     }
-  }, [audioStarted.current]);
+  }, [audioContextStarted.current]);
   
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -103,13 +146,8 @@ export default function Home() {
   const timerMode = timerData?.timerMode ?? 'idle';
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
-    if (!audioStarted.current) {
-      try {
-        await Tone.start();
-        audioStarted.current = true;
-      } catch (e) {
-        console.error("Audio could not start: ", e);
-      }
+    if (!audioContextStarted.current) {
+        await startAudioContext();
     }
     
     if (powerEventsRef && user) {
@@ -142,9 +180,22 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [powerEventsRef, toast, user]);
+  }, [powerEventsRef, toast, user, startAudioContext]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
+  const { isSoundDetected, error: soundError, start: startSoundCheck, stop: stopSoundCheck } = useSoundStatus();
+
+  useEffect(() => {
+    if (useSoundControl) {
+      startSoundCheck();
+    } else {
+      stopSoundCheck();
+    }
+    return () => stopSoundCheck();
+  }, [useSoundControl, startSoundCheck, stopSoundCheck]);
+
+  const isTimerActiveSource = useSoundControl ? isSoundDetected : isPowerOnline;
+
 
    const playBellSequence = useCallback((count: number) => {
     if (!bellSoundRef.current) return;
@@ -216,21 +267,21 @@ export default function Home() {
                     pauseTime: null,
                     accumulatedPauseTime: 0,
                     breakStartTime: null,
-                    timerMode: isPowerOnline ? 'running' : 'paused'
+                    timerMode: isTimerActiveSource ? 'running' : 'paused'
                 };
-                if (!isPowerOnline) {
+                if (!isTimerActiveSource) {
                     newTimerData.pauseTime = serverTimestamp() as unknown as Timestamp;
                 }
                 updateTimerState(newTimerData);
             }
         }
     }, 1000);
-  }, [timerData, timerMode, updateTimerState, isPowerOnline, playBellSequence]); 
+  }, [timerData, timerMode, updateTimerState, isTimerActiveSource, playBellSequence]); 
   
   useEffect(() => {
-    if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
+    if (isTimerActiveSource === undefined || isTimerLoading || !timerData) return;
 
-    if (isPowerOnline) {
+    if (isTimerActiveSource) {
       if (timerMode === 'paused') {
         const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
@@ -253,7 +304,7 @@ export default function Home() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPowerOnline, isTimerLoading, timerData?.timerMode]); 
+  }, [isTimerActiveSource, isTimerLoading, timerData?.timerMode]); 
   
   useEffect(() => {
     if (timerMode === 'running' || timerMode === 'break') {
@@ -293,14 +344,7 @@ export default function Home() {
   useEffect(() => {
     if (timerMode === 'finished') {
       const initAlarm = async () => {
-        if (!audioStarted.current) {
-          try {
-            await Tone.start();
-            audioStarted.current = true;
-          } catch (e) {
-            console.error("Audio could not start: ", e);
-          }
-        };
+        await startAudioContext();
         const alarmSynth = new Tone.PulseOscillator('C4', 0.4).toDestination();
         const alarmLfo = new Tone.LFO(5, 400, 4000).connect(alarmSynth.frequency).start();
         alarmSynth.start();
@@ -321,7 +365,7 @@ export default function Home() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode]);
+  }, [timerMode, startAudioContext]);
 
   const handleStartTimer = async () => {
     const h = parseInt(hours, 10) || 0;
@@ -329,20 +373,7 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      if (!audioStarted.current) {
-        try {
-            await Tone.start();
-            audioStarted.current = true;
-        } catch (e) {
-            console.error("Audio could not start: ", e);
-            toast({
-                variant: "destructive",
-                title: "Audio Error",
-                description: "Could not start audio. Please interact with the page and try again.",
-            });
-            return;
-        }
-      }
+      await startAudioContext();
       
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
@@ -351,10 +382,10 @@ export default function Home() {
         pauseTime: null,
         accumulatedPauseTime: 0,
         breakStartTime: null,
-        timerMode: isPowerOnline ? 'running' : 'paused'
+        timerMode: isTimerActiveSource ? 'running' : 'paused'
       };
 
-      if(!isPowerOnline){
+      if(!isTimerActiveSource){
         newTimerData.pauseTime = serverTimestamp() as unknown as Timestamp;
       }
       
@@ -423,7 +454,9 @@ export default function Home() {
         <>
           <CardHeader>
             <CardTitle>Set Timer Duration</CardTitle>
-            <CardDescription>The timer will only count down when power is available.</CardDescription>
+            <CardDescription>
+              {useSoundControl ? "Timer will run when sound is detected." : "Timer will run when power is available."}
+            </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
             <div className="flex items-end gap-4">
@@ -436,6 +469,11 @@ export default function Home() {
                 <Input id="minutes" type="number" value={minutes} onChange={(e) => setMinutes(e.target.value)} min="0" max="59"/>
               </div>
             </div>
+            <div className="flex items-center space-x-2">
+              <Switch id="sound-control" checked={useSoundControl} onCheckedChange={setUseSoundControl} />
+              <Label htmlFor="sound-control">Control via Sound</Label>
+            </div>
+             {soundError && <p className="text-xs text-destructive">{soundError}</p>}
           </CardContent>
           <CardFooter>
             <Button onClick={handleStartTimer} className="w-full">Start Timer</Button>
@@ -449,7 +487,10 @@ export default function Home() {
         <CardHeader>
           <CardTitle>Timer Running</CardTitle>
           <CardDescription>
-            {timerMode === 'paused' ? 'Timer is paused due to power outage.' : 'Timer is active.'}
+            {timerMode === 'paused' 
+              ? (useSoundControl ? 'Timer paused due to silence.' : 'Timer is paused due to power outage.')
+              : 'Timer is active.'
+            }
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-center justify-center p-6">
@@ -483,13 +524,19 @@ export default function Home() {
       <main className="w-full max-w-md flex flex-col items-center">
         <div className="flex justify-center items-center gap-4 mb-4">
             <h1 className="text-3xl font-bold text-center text-primary">Vidyut Sahayak</h1>
-            <PowerStatus isOnline={isPowerOnline} />
+             {useSoundControl ? (
+              <StatusIndicator isActive={isSoundDetected} activeText="Sound Detected" inactiveText="Silence" IconOn={Mic} IconOff={MicOff} />
+            ) : (
+              <PowerStatus isOnline={isPowerOnline} />
+            )}
         </div>
         <Card className="w-full shadow-2xl">
           {renderContent()}
         </Card>
         <p className="text-xs text-muted-foreground text-center mt-4">
-          Power status is based on your device's charging state.
+           {useSoundControl
+            ? "Status is based on microphone input."
+            : "Power status is based on your device's charging state."}
         </p>
       </main>
 
