@@ -7,6 +7,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 const START_DELAY = 500;
 // The time in milliseconds the sound needs to be below threshold to be considered "stopped".
 const STOP_DELAY = 1500;
+// The sensitivity threshold in dB. More negative is more sensitive.
+const SENSITIVITY_THRESHOLD = -55;
+
 
 interface UseSoundStatusResult {
   isSoundDetected: boolean | undefined;
@@ -15,7 +18,7 @@ interface UseSoundStatusResult {
   stop: () => void;
 }
 
-export function useSoundStatus(threshold: number): UseSoundStatusResult {
+export function useSoundStatus(): UseSoundStatusResult {
   const [isSoundDetected, setIsSoundDetected] = useState<boolean | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   
@@ -25,31 +28,8 @@ export function useSoundStatus(threshold: number): UseSoundStatusResult {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const updateSoundStatus = useCallback((isLoud: boolean) => {
-    setIsSoundDetected(currentStatus => {
-      // If status is not changing, do nothing.
-      if (currentStatus === isLoud) {
-        if(timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = null;
-        return currentStatus;
-      }
-      
-      // If a change is pending, do nothing.
-      if (timerRef.current) return currentStatus;
-
-      // Schedule the status change after the appropriate delay.
-      const delay = isLoud ? START_DELAY : STOP_DELAY;
-      timerRef.current = setTimeout(() => {
-        setIsSoundDetected(isLoud);
-        timerRef.current = null;
-      }, delay);
-
-      return currentStatus; // Return current status until timer fires
-    });
-  }, []);
-
+  const startTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const stopTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const monitor = useCallback(() => {
     if (!analyserRef.current) return;
@@ -65,10 +45,34 @@ export function useSoundStatus(threshold: number): UseSoundStatusResult {
     const rms = Math.sqrt(sumSquares / dataArray.length);
     const db = 20 * Math.log10(rms);
 
-    updateSoundStatus(db > threshold);
+    if (db > SENSITIVITY_THRESHOLD) {
+      // Sound is detected
+      if (stopTimerRef.current) {
+        clearTimeout(stopTimerRef.current);
+        stopTimerRef.current = null;
+      }
+      if (!isSoundDetected && !startTimerRef.current) {
+        startTimerRef.current = setTimeout(() => {
+          setIsSoundDetected(true);
+          startTimerRef.current = null;
+        }, START_DELAY);
+      }
+    } else {
+      // Silence is detected
+      if (startTimerRef.current) {
+        clearTimeout(startTimerRef.current);
+        startTimerRef.current = null;
+      }
+      if (isSoundDetected && !stopTimerRef.current) {
+        stopTimerRef.current = setTimeout(() => {
+          setIsSoundDetected(false);
+          stopTimerRef.current = null;
+        }, STOP_DELAY);
+      }
+    }
 
     animationFrameRef.current = requestAnimationFrame(monitor);
-  }, [updateSoundStatus, threshold]);
+  }, [isSoundDetected]);
 
 
   const stop = useCallback(() => {
@@ -88,6 +92,9 @@ export function useSoundStatus(threshold: number): UseSoundStatusResult {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
+    if (startTimerRef.current) clearTimeout(startTimerRef.current);
+    if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+    
     analyserRef.current = null;
     setIsSoundDetected(undefined);
     setError(null);
