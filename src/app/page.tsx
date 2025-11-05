@@ -214,7 +214,7 @@ export default function Home() {
         // Announce every 15 minutes (900 seconds)
         if (lastAnnouncementTimeRef.current === null) {
             lastAnnouncementTimeRef.current = remaining;
-            makeAnnouncement(remaining);
+            // Don't announce on start, only on intervals
         } else if (lastAnnouncementTimeRef.current - remaining >= 900) {
             makeAnnouncement(remaining);
             lastAnnouncementTimeRef.current = remaining;
@@ -234,12 +234,10 @@ export default function Home() {
       // Power is ON
       if (timerMode === 'paused') {
         // Resuming from a pause
-        const now = serverTimestamp();
+        const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
         if (timerData.pauseTime) {
-            // It's better to calculate this on server, but for client-side only:
-            // This is an approximation. For real precision, cloud function would be better.
-            const pauseDuration = (new Date().getTime() - timerData.pauseTime.toDate().getTime()) / 1000;
+            const pauseDuration = (now - timerData.pauseTime.toDate().getTime()) / 1000;
             newAccumulatedPauseTime += pauseDuration;
         }
         updateTimerState({ 
@@ -266,8 +264,8 @@ export default function Home() {
       startTimerInterval();
     } else {
       stopTimerInterval();
-      // When not running, calculate display time once
-      if (timerData?.startTime) {
+      // When not running, calculate display time once based on server data
+      if (timerData?.startTime && timerData.totalDuration > 0) {
           const now = Date.now();
           const serverStartTime = timerData.startTime.toDate().getTime();
           let elapsedSeconds = (now - serverStartTime) / 1000;
@@ -331,13 +329,19 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      updateTimerState({
+      const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
         startTime: serverTimestamp() as unknown as Timestamp,
         pauseTime: null,
         accumulatedPauseTime: 0,
         timerMode: isPowerOnline ? 'running' : 'paused'
-      });
+      };
+
+      if(!isPowerOnline){
+        newTimerData.pauseTime = serverTimestamp() as unknown as Timestamp;
+      }
+      
+      updateTimerState(newTimerData);
     }
   };
 
