@@ -15,6 +15,7 @@ import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/fireb
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection } from 'firebase/firestore';
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+import { getSpokenTime } from './actions';
 
 
 type TimerMode = 'idle' | 'running' | 'paused' | 'finished';
@@ -41,10 +42,13 @@ export default function Home() {
   
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
+  const [announcementAudio, setAnnouncementAudio] = useState<HTMLAudioElement | null>(null);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const localTimerRef = useRef<number | null>(null);
+  const announcementIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
@@ -147,6 +151,40 @@ export default function Home() {
     }, 1000);
   };
   
+  const stopAnnouncementInterval = () => {
+    if (announcementIntervalRef.current) {
+      clearInterval(announcementIntervalRef.current);
+      announcementIntervalRef.current = null;
+    }
+  };
+
+  const startAnnouncementInterval = useCallback(() => {
+    stopAnnouncementInterval();
+
+    const makeAnnouncement = async () => {
+      const currentRemaining = localTimerRef.current;
+      if (currentRemaining === null || currentRemaining <= 0) return;
+      
+      const remainingMinutes = Math.ceil(currentRemaining / 60);
+      const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
+
+      try {
+        const result = await getSpokenTime(textToSpeak);
+        if (result && result.media) {
+          const audio = new Audio(result.media);
+          setAnnouncementAudio(audio);
+          audio.play();
+        }
+      } catch (error) {
+        console.error("Failed to get spoken time:", error);
+      }
+    };
+    
+    // Announce immediately, then every 15 minutes
+    makeAnnouncement(); 
+    announcementIntervalRef.current = setInterval(makeAnnouncement, 15 * 60 * 1000); // 15 minutes
+  }, []);
+
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
 
@@ -167,15 +205,24 @@ export default function Home() {
   useEffect(() => {
     if (timerMode === 'running') {
       startTimerInterval();
+      startAnnouncementInterval();
     } else {
       stopTimerInterval();
+      stopAnnouncementInterval();
+      if (announcementAudio) {
+        announcementAudio.pause();
+        setAnnouncementAudio(null);
+      }
       if (timerMode !== 'finished') {
           localTimerRef.current = null;
       }
     }
-    return stopTimerInterval;
+    return () => {
+        stopTimerInterval();
+        stopAnnouncementInterval();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode]);
+  }, [timerMode, startAnnouncementInterval]);
 
   useEffect(() => {
     if (timerMode === 'finished') {
