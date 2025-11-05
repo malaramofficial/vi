@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff, Mic, MicOff } from 'lucide-react';
+import { Zap, ZapOff, Mic, MicOff, Volume2 } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
@@ -81,20 +81,26 @@ export default function Home() {
   const lastBellIntervalRef = useRef(0);
 
   const startAudioContext = useCallback(async () => {
-    if (audioContextStarted.current) return;
+    if (audioContextStarted.current || Tone.context.state === 'running') {
+      audioContextStarted.current = true;
+      return;
+    };
     try {
       await Tone.start();
       audioContextStarted.current = true;
       console.log("Audio context started successfully.");
     } catch (e) {
       console.error("Audio could not start: ", e);
-      toast({
-          variant: "destructive",
-          title: "Audio Error",
-          description: "Could not start audio. Please interact with the page and try again.",
-      });
     }
-  }, [toast]);
+  }, []);
+
+  const timerMode = timerData?.timerMode ?? 'idle';
+
+  useEffect(() => {
+    if (timerMode === 'running' && !audioContextStarted.current) {
+        startAudioContext();
+    }
+  }, [timerMode, startAudioContext]);
 
 
   // Sound effects
@@ -103,30 +109,25 @@ export default function Home() {
   const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
 
   useEffect(() => {
-    if (!audioContextStarted.current) return;
-    if (!powerOffSoundRef.current) {
-      powerOffSoundRef.current = new Tone.Synth({
-        oscillator: { type: 'square' },
-        envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
-      }).toDestination();
-    }
-    if (!powerOnSoundRef.current) {
-      powerOnSoundRef.current = new Tone.Synth({
-        oscillator: { type: 'sine' },
-        envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
-      }).toDestination();
-    }
-    if (!bellSoundRef.current) {
-      bellSoundRef.current = new Tone.MetalSynth({
-        frequency: 250,
-        envelope: { attack: 0.001, decay: 1.4, release: 0.2 },
-        harmonicity: 5.1,
-        modulationIndex: 32,
-        resonance: 4000,
-        octaves: 1.5,
-      }).toDestination();
-    }
-  }, [audioContextStarted.current]);
+    powerOffSoundRef.current = new Tone.Synth({
+      oscillator: { type: 'square' },
+      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
+    }).toDestination();
+    
+    powerOnSoundRef.current = new Tone.Synth({
+      oscillator: { type: 'sine' },
+      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
+    }).toDestination();
+
+    bellSoundRef.current = new Tone.MetalSynth({
+      frequency: 250,
+      envelope: { attack: 0.001, decay: 1.4, release: 0.2 },
+      harmonicity: 5.1,
+      modulationIndex: 32,
+      resonance: 4000,
+      octaves: 1.5,
+    }).toDestination();
+  }, []);
   
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -144,15 +145,13 @@ export default function Home() {
     }
   };
   
-  const timerMode = timerData?.timerMode ?? 'idle';
-
-  const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
-    await startAudioContext();
-    
+  const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {    
     if (powerEventsRef && user) {
         addDocumentNonBlocking(collection(powerEventsRef.firestore, 'power_events'), { ...event, userId: user.uid, deviceId: 'TBD' });
     }
     
+    if(!audioContextStarted.current) return;
+
     if (event.status === 'offline') {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
@@ -179,7 +178,7 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [powerEventsRef, toast, user, startAudioContext]);
+  }, [powerEventsRef, toast, user]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
   const { isSoundDetected, error: soundError, start: startSoundCheck, stop: stopSoundCheck } = useSoundStatus();
@@ -193,11 +192,11 @@ export default function Home() {
     return () => stopSoundCheck();
   }, [useSoundControl, isMicActive, startSoundCheck, stopSoundCheck]);
 
-  const isTimerActiveSource = useSoundControl ? isSoundDetected : isPowerOnline;
+  const isTimerActiveSource = useSoundControl ? (isMicActive && isSoundDetected) : isPowerOnline;
 
 
    const playBellSequence = useCallback((count: number) => {
-    if (!bellSoundRef.current) return;
+    if (!bellSoundRef.current || !audioContextStarted.current) return;
     const now = Tone.now();
     for (let i = 0; i < count; i++) {
       bellSoundRef.current.triggerAttack(now + i * 0.8);
@@ -280,8 +279,11 @@ export default function Home() {
   useEffect(() => {
     if (isTimerActiveSource === undefined || isTimerLoading || !timerData) return;
 
+    // Only react to source changes if the timer is in a state that should be auto-managed
+    if (timerData?.timerMode !== 'running' && timerData?.timerMode !== 'paused') return;
+
     if (isTimerActiveSource) {
-      if (timerMode === 'paused') {
+      if (timerData?.timerMode === 'paused') {
         const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
         if (timerData.pauseTime) {
@@ -295,7 +297,7 @@ export default function Home() {
         });
       }
     } else {
-      if (timerMode === 'running') {
+      if (timerData?.timerMode === 'running') {
         updateTimerState({ 
             timerMode: 'paused',
             pauseTime: serverTimestamp() as unknown as Timestamp,
@@ -306,44 +308,32 @@ export default function Home() {
   }, [isTimerActiveSource, isTimerLoading, timerData?.timerMode]); 
   
   useEffect(() => {
-    if (timerMode === 'running' || timerMode === 'break') {
+    if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
       startTimerInterval();
-    } else {
+    } else if ((timerMode === 'idle' || timerMode === 'finished') && intervalRef.current) {
       stopTimerInterval();
-      if (timerMode !== 'finished') {
-          // When not running, calculate display time once based on server data
-          if (timerData?.startTime && timerData.totalDuration > 0) {
-              const now = Date.now();
-              const serverStartTime = timerData.startTime.toDate().getTime();
-              let elapsedSeconds = (now - serverStartTime) / 1000;
-              elapsedSeconds -= timerData.accumulatedPauseTime || 0;
-
-              if(timerMode === 'paused' && timerData.pauseTime) {
-                  const serverPauseTime = timerData.pauseTime.toDate().getTime();
-                  const currentPauseDuration = (now - serverPauseTime) / 1000;
-                  elapsedSeconds -= currentPauseDuration;
-              }
-              
-              const remaining = Math.max(0, timerData.totalDuration - elapsedSeconds);
-              setDisplayTime(remaining);
-          } else if (timerData?.totalDuration) {
-              setDisplayTime(timerData.totalDuration);
-          } else {
-              setDisplayTime(0);
-          }
-      }
     }
+    
+    // When timer is not active, set initial display time
+    if (timerMode === 'idle' || timerMode === 'finished') {
+       if (timerData?.lastSetDuration && timerMode === 'idle') {
+           setDisplayTime(timerData.lastSetDuration);
+       } else {
+           setDisplayTime(0);
+       }
+    }
+
     return () => {
         stopTimerInterval();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode, timerData?.startTime, timerData?.totalDuration, timerData?.accumulatedPauseTime, timerData?.pauseTime, timerData?.breakStartTime]);
+  }, [timerMode, timerData, startTimerInterval]);
 
 
   useEffect(() => {
     if (timerMode === 'finished') {
       const initAlarm = async () => {
-        await startAudioContext();
+        if(!audioContextStarted.current) await startAudioContext();
         const alarmSynth = new Tone.PulseOscillator('C4', 0.4).toDestination();
         const alarmLfo = new Tone.LFO(5, 400, 4000).connect(alarmSynth.frequency).start();
         alarmSynth.start();
@@ -367,13 +357,14 @@ export default function Home() {
   }, [timerMode, startAudioContext]);
 
   const handleStartTimer = async () => {
+    await startAudioContext();
+
     const h = parseInt(hours, 10) || 0;
     const m = parseInt(minutes, 10) || 0;
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      await startAudioContext();
-      setIsMicActive(true); // Ensure mic is active when starting timer with sound control
+      setIsMicActive(true); 
       
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
@@ -401,9 +392,9 @@ export default function Home() {
       pauseTime: null,
       accumulatedPauseTime: 0,
       breakStartTime: null,
-      lastSetDuration: 0,
+      lastSetDuration: timerData?.lastSetDuration || 0
     });
-    setDisplayTime(0);
+    setDisplayTime(timerData?.lastSetDuration || 0);
   };
 
   const handleStopAlarm = () => {
@@ -424,7 +415,7 @@ export default function Home() {
   const renderContent = () => {
     if (isTimerLoading || isUserLoading) {
         return (
-             <CardContent className="flex items-center justify-center p-6">
+             <CardContent className="flex items-center justify-center p-6 h-64">
                 <p>Loading...</p>
              </CardContent>
         )
@@ -524,17 +515,17 @@ export default function Home() {
       <main className="w-full max-w-md flex flex-col items-center">
         <div className="flex justify-center items-center gap-4 mb-4">
             <h1 className="text-3xl font-bold text-center text-primary">Vidyut Sahayak</h1>
-             {useSoundControl ? (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="icon" onClick={() => setIsMicActive(!isMicActive)} className="h-8 w-8">
-                  {isMicActive ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4 text-destructive" />}
-                  <span className="sr-only">Toggle Microphone</span>
-                </Button>
-                <StatusIndicator isActive={isSoundDetected} activeText="Sound" inactiveText="Silence" IconOn={Mic} IconOff={MicOff} />
-              </div>
-            ) : (
-              <PowerStatus isOnline={isPowerOnline} />
-            )}
+             {timerMode !== 'idle' && useSoundControl ? (
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="icon" onClick={() => setIsMicActive(!isMicActive)} className="h-8 w-8">
+                    {isMicActive ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4 text-destructive" />}
+                    <span className="sr-only">Toggle Microphone</span>
+                  </Button>
+                  <StatusIndicator isActive={isMicActive ? isSoundDetected : false} activeText="Sound" inactiveText="Silence" IconOn={Mic} IconOff={MicOff} />
+                </div>
+              ) : (
+                <PowerStatus isOnline={isPowerOnline} />
+              )}
         </div>
         <Card className="w-full shadow-2xl">
           {renderContent()}
