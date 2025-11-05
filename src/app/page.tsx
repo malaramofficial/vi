@@ -37,7 +37,7 @@ export default function Home() {
   const userTimerRef = useMemoFirebase(() => user ? doc(firestore, 'timers', user.uid) : null, [firestore, user]);
   const { data: timerData, isLoading: isTimerLoading } = useDoc<TimerData>(userTimerRef);
 
-  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'power_events') : null, [firestore, user]);
+  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
 
   const [hours, setHours] = useState('0');
   const [minutes, setMinutes] = useState('30');
@@ -93,8 +93,7 @@ export default function Home() {
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (powerEventsRef && user) {
-        const eventData = { ...event, userId: user.uid, deviceId: 'TBD' };
-        addDocumentNonBlocking(powerEventsRef, eventData);
+        addDocumentNonBlocking(collection(powerEventsRef.firestore, 'power_events'), { ...event, userId: user.uid, deviceId: 'TBD' });
     }
     
     await Tone.start();
@@ -462,7 +461,3 @@ export default function Home() {
     </div>
   );
 }
-
-    
-
-    
