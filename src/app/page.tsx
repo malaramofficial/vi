@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff } from 'lucide-react';
+import { Zap, ZapOff, Volume2 } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection } from 'firebase/firestore';
@@ -43,6 +43,7 @@ export default function Home() {
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
   const [announcementAudio, setAnnouncementAudio] = useState<HTMLAudioElement | null>(null);
+  const [isAnnouncing, setIsAnnouncing] = useState(false);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -151,20 +152,11 @@ export default function Home() {
     }, 1000);
   };
   
-  const stopAnnouncementInterval = () => {
-    if (announcementIntervalRef.current) {
-      clearInterval(announcementIntervalRef.current);
-      announcementIntervalRef.current = null;
-    }
-  };
-
-  const startAnnouncementInterval = useCallback(() => {
-    stopAnnouncementInterval();
-
-    const makeAnnouncement = async () => {
+  const makeAnnouncement = useCallback(async () => {
       const currentRemaining = localTimerRef.current;
-      if (currentRemaining === null || currentRemaining <= 0) return;
+      if (currentRemaining === null || currentRemaining <= 0 || isAnnouncing) return;
       
+      setIsAnnouncing(true);
       const remainingMinutes = Math.ceil(currentRemaining / 60);
       const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
 
@@ -174,16 +166,30 @@ export default function Home() {
           const audio = new Audio(result.media);
           setAnnouncementAudio(audio);
           audio.play();
+          audio.onended = () => setIsAnnouncing(false);
+        } else {
+          setIsAnnouncing(false);
         }
       } catch (error) {
         console.error("Failed to get spoken time:", error);
+        setIsAnnouncing(false);
       }
-    };
+    }, [isAnnouncing]);
+
+  const stopAnnouncementInterval = () => {
+    if (announcementIntervalRef.current) {
+      clearInterval(announcementIntervalRef.current);
+      announcementIntervalRef.current = null;
+    }
+  };
+
+  const startAnnouncementInterval = useCallback(() => {
+    stopAnnouncementInterval();
     
     // Announce immediately, then every 15 minutes
     makeAnnouncement(); 
     announcementIntervalRef.current = setInterval(makeAnnouncement, 15 * 60 * 1000); // 15 minutes
-  }, []);
+  }, [makeAnnouncement]);
 
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
@@ -337,6 +343,12 @@ export default function Home() {
           <div className="w-full bg-muted rounded-full h-2.5 mt-6 overflow-hidden">
             <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(displayTime / totalDuration) * 100}%` }}></div>
           </div>
+           {timerMode === 'running' && (
+            <Button onClick={makeAnnouncement} disabled={isAnnouncing} variant="outline" size="sm" className="mt-6">
+              <Volume2 className="mr-2 h-4 w-4" />
+              {isAnnouncing ? 'Announcing...' : 'Announce Time'}
+            </Button>
+          )}
         </CardContent>
         <CardFooter>
           <Button onClick={handleReset} variant="destructive" className="w-full">Cancel and Reset</Button>
@@ -379,5 +391,3 @@ export default function Home() {
     </div>
   );
 }
-
-    
