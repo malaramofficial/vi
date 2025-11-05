@@ -31,12 +31,15 @@ export default function Home() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Sound effects
-  const powerOffSoundRef = useRef<Tone.Player | null>(null);
+  const powerOffSoundRef = useRef<Tone.Synth | null>(null);
   const powerOnSoundRef = useRef<Tone.Synth | null>(null);
 
   useEffect(() => {
     // Initialize sounds
-    powerOffSoundRef.current = new Tone.Player("/beep.mp3").toDestination();
+    powerOffSoundRef.current = new Tone.Synth({
+      oscillator: { type: 'square' },
+      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
+    }).toDestination();
     powerOnSoundRef.current = new Tone.Synth({
       oscillator: { type: 'sine' },
       envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
@@ -48,7 +51,7 @@ export default function Home() {
     
     await Tone.start();
     if (event.status === 'offline') {
-      powerOffSoundRef.current?.start();
+      powerOffSoundRef.current?.triggerAttackRelease("C4", "8n");
     } else {
       powerOnSoundRef.current?.triggerAttackRelease("C5", "8n");
     }
