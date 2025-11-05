@@ -35,7 +35,7 @@ export default function Home() {
   const userTimerRef = useMemoFirebase(() => user ? doc(firestore, 'timers', user.uid) : null, [firestore, user]);
   const { data: timerData, isLoading: isTimerLoading } = useDoc<TimerData>(userTimerRef);
 
-  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'power_events') : null, [firestore, user]);
+  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
   
   const [hours, setHours] = useState('0');
   const [minutes, setMinutes] = useState('30');
@@ -44,10 +44,10 @@ export default function Home() {
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
   const [announcementAudio, setAnnouncementAudio] = useState<HTMLAudioElement | null>(null);
   const [isAnnouncing, setIsAnnouncing] = useState(false);
+  const [displayTime, setDisplayTime] = useState(0);
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const localTimerRef = useRef<number | null>(null);
   const announcementIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
 
@@ -135,29 +135,32 @@ export default function Home() {
     }
   };
 
-  const startTimerInterval = () => {
+  const startTimerInterval = useCallback(() => {
     stopTimerInterval();
-    localTimerRef.current = remainingTime;
+    
+    let localTime = remainingTime;
+    setDisplayTime(localTime);
+
     intervalRef.current = setInterval(() => {
-      localTimerRef.current = (localTimerRef.current ?? 0) - 1;
-      if ((localTimerRef.current ?? 0) <= 0) {
+      localTime--;
+      setDisplayTime(localTime);
+
+      if (localTime <= 0) {
         stopTimerInterval();
         updateTimerState({ remainingTime: 0, timerMode: 'finished' });
       } else {
-        // Periodically sync with firestore
-        if ((localTimerRef.current ?? 0) % 5 === 0) {
-             updateTimerState({ remainingTime: localTimerRef.current });
+        if (localTime % 5 === 0) {
+          updateTimerState({ remainingTime: localTime });
         }
       }
     }, 1000);
-  };
+  }, [remainingTime]); // Only depends on the initial remainingTime from Firestore
   
   const makeAnnouncement = useCallback(async () => {
-      const currentRemaining = localTimerRef.current ?? remainingTime;
-      if (currentRemaining === null || currentRemaining <= 0 || isAnnouncing) return;
+      if (displayTime <= 0 || isAnnouncing) return;
       
       setIsAnnouncing(true);
-      const remainingMinutes = Math.ceil(currentRemaining / 60);
+      const remainingMinutes = Math.ceil(displayTime / 60);
       const textToSpeak = `अभी आपकी लाइन में ${remainingMinutes} मिनट बाकी हैं`;
 
       try {
@@ -174,7 +177,7 @@ export default function Home() {
         console.error("Failed to get spoken time:", error);
         setIsAnnouncing(false);
       }
-    }, [isAnnouncing, remainingTime]);
+    }, [isAnnouncing, displayTime]);
 
   const stopAnnouncementInterval = () => {
     if (announcementIntervalRef.current) {
@@ -186,27 +189,25 @@ export default function Home() {
   const startAnnouncementInterval = useCallback(() => {
     stopAnnouncementInterval();
     
-    // Announce immediately, then every 15 minutes
     makeAnnouncement(); 
-    announcementIntervalRef.current = setInterval(makeAnnouncement, 15 * 60 * 1000); // 15 minutes
+    announcementIntervalRef.current = setInterval(makeAnnouncement, 15 * 60 * 1000);
   }, [makeAnnouncement]);
 
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
 
     if (isPowerOnline) {
-      // If power is ON and timer was paused, resume it.
       if (timerMode === 'paused') {
         updateTimerState({ timerMode: 'running' });
       }
     } else {
-      // If power is OFF and timer was running, pause it.
       if (timerMode === 'running') {
-        updateTimerState({ timerMode: 'paused' });
+        stopTimerInterval(); // Stop the interval immediately on power loss
+        updateTimerState({ timerMode: 'paused', remainingTime: displayTime > 0 ? displayTime : remainingTime });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPowerOnline, isTimerLoading, timerData]); // Rerun when power status or timer data from firestore changes
+  }, [isPowerOnline, isTimerLoading, timerData]); 
   
   useEffect(() => {
     if (timerMode === 'running') {
@@ -215,12 +216,10 @@ export default function Home() {
     } else {
       stopTimerInterval();
       stopAnnouncementInterval();
+      setDisplayTime(remainingTime); // Sync display time when not running
       if (announcementAudio) {
         announcementAudio.pause();
         setAnnouncementAudio(null);
-      }
-      if (timerMode !== 'finished') {
-          localTimerRef.current = null;
       }
     }
     return () => {
@@ -228,7 +227,14 @@ export default function Home() {
         stopAnnouncementInterval();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerMode, startAnnouncementInterval]);
+  }, [timerMode, startTimerInterval]);
+
+  // Sync display time initially and when remainingTime from firestore changes while not running
+  useEffect(() => {
+    if (timerMode !== 'running') {
+      setDisplayTime(remainingTime);
+    }
+  }, [remainingTime, timerMode]);
 
   useEffect(() => {
     if (timerMode === 'finished') {
@@ -262,6 +268,7 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
+      setDisplayTime(durationInSeconds);
       updateTimerState({
         totalDuration: durationInSeconds,
         remainingTime: durationInSeconds,
@@ -289,11 +296,6 @@ export default function Home() {
     return [h, m, s].map(v => v.toString().padStart(2, '0')).join(':');
   };
   
-  const displayTime = localTimerRef.current !== null && timerMode === 'running' 
-    ? localTimerRef.current 
-    : remainingTime;
-
-
   const renderContent = () => {
     if (isTimerLoading || isUserLoading) {
         return (
