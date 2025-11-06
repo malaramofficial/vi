@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from '@/components/ui/sheet';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -8,7 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Lightbulb, BarChart2, AlertTriangle, List } from 'lucide-react';
-import { getPowerOutageAnalysis, deleteOldPowerEvents } from '@/app/actions';
+import { getPowerOutageAnalysis } from '@/app/actions';
 import type { PowerEvent } from '@/hooks/use-power-status';
 import type { AnalyzePowerOutageTrendsOutput } from '@/ai/flows/analyze-power-outage-trends';
 import { useFirestore, useUser, useCollection, useMemoFirebase } from '@/firebase';
@@ -47,11 +47,6 @@ export function AnalysisSheet() {
   const [error, setError] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
 
-  useEffect(() => {
-    if (isOpen && user?.uid) {
-      deleteOldPowerEvents(user.uid).catch(console.error);
-    }
-  }, [isOpen, user?.uid]);
 
   const handleAnalyze = async () => {
     if (!log) return;

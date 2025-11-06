@@ -77,8 +77,6 @@ export default function Home() {
   const userTimerRef = useMemoFirebase(() => user ? doc(firestore, 'timers', user.uid) : null, [firestore, user]);
   const { data: timerData, isLoading: isTimerLoading } = useDoc<TimerData>(userTimerRef);
 
-  const powerEventsRef = useMemoFirebase(() => user ? collection(firestore, 'users', user.uid, 'powerEvents') : null, [firestore, user]);
-
   const [hours, setHours] = useState('0');
   const [minutes, setMinutes] = useState('30');
   
@@ -174,8 +172,8 @@ export default function Home() {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
       }
-      // Check current timer mode directly from state, not from a potentially stale closure
-      if (timerMode === 'running') {
+      // Check current timer mode directly from the most recent timerData
+      if (timerData?.timerMode === 'running') {
         setShowDisconnectConfirm(true);
       }
     } else { // online
@@ -201,7 +199,7 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user, timerMode]);
+  }, [firestore, toast, user, timerData?.timerMode]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
@@ -387,7 +385,6 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
-      manualDisconnectRef.current = false;
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
         lastSetDuration: durationInSeconds,
