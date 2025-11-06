@@ -31,10 +31,14 @@ function formatEventTime(date: Date): string {
 export function AnalysisSheet() {
   const firestore = useFirestore();
   const { user } = useUser();
+  
   const powerEventsRef = useMemoFirebase(() => {
-    if (!user) return null;
-    return query(collection(firestore, 'users', user.uid, 'powerEvents'), orderBy('timestamp', 'desc'))
+    if (user && firestore) {
+      return query(collection(firestore, 'users', user.uid, 'powerEvents'), orderBy('timestamp', 'desc'));
+    }
+    return null;
   }, [firestore, user]);
+
 
   const { data: log, isLoading: isLogLoading } = useCollection<PowerEventWithDate>(powerEventsRef);
 
