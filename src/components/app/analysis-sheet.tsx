@@ -44,7 +44,7 @@ export function AnalysisSheet() {
 
       const logString = log.map(event => {
         const date = (event.timestamp as Timestamp).toDate();
-        return `${date.toISOString()} - ${event.status?.toUpperCase() || 'UNKNOWN'}`;
+        return `${date.toISOString()} - ${event.status?.toUpperCase() ?? 'UNKNOWN'}`;
       }).join('\n');
 
       const result = await getPowerOutageAnalysis(logString);
