@@ -34,19 +34,19 @@ export function AnalysisSheet() {
     try {
       const powerEventsRef = query(collection(firestore, 'users', user.uid, 'powerEvents'), orderBy('timestamp', 'desc'));
       const logSnapshot = await getDocs(powerEventsRef);
-      const log = logSnapshot.docs.map(doc => doc.data());
+      const logData = logSnapshot.docs.map(doc => doc.data());
 
-      if (log.length < 2) {
+      if (logData.length < 2) {
         setError("Not enough data to analyze. At least two power events are needed.");
         setIsLoading(false);
         return;
       }
 
-      const logString = log.map(event => {
+      const logString = logData.map(event => {
         const date = (event.timestamp as Timestamp).toDate();
         return `${date.toISOString()} - ${event.status?.toUpperCase() ?? 'UNKNOWN'}`;
       }).join('\n');
-
+      
       const result = await getPowerOutageAnalysis(logString);
       setAnalysis(result);
     } catch (e) {
