@@ -145,7 +145,7 @@ export default function Home() {
     }
   }, [isUserLoading, user, auth]);
 
-  const updateTimerState = (newState: Partial<TimerData>) => {
+  const updateTimerState = useCallback((newState: Partial<TimerData>) => {
     if (userTimerRef) {
       const data = {
         ...newState,
@@ -153,7 +153,7 @@ export default function Home() {
       }
       setDocumentNonBlocking(userTimerRef, data, { merge: true });
     }
-  };
+  }, [userTimerRef]);
 
   const pauseTimerForPowerCut = useCallback(() => {
       updateTimerState({ 
@@ -162,10 +162,11 @@ export default function Home() {
       });
   }, [updateTimerState]);
   
-  const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {    
-    if (powerEventsRef && user) {
-        addDocumentNonBlocking(collection(powerEventsRef.firestore, 'power_events'), { ...event, userId: user.uid, deviceId: 'TBD' });
-    }
+  const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
+    if (!user || !firestore) return;
+    
+    const currentPowerEventsRef = collection(firestore, 'users', user.uid, 'powerEvents');
+    addDocumentNonBlocking(currentPowerEventsRef, { ...event, userId: user.uid });
     
     if(!audioContextStarted.current) return;
 
@@ -173,8 +174,8 @@ export default function Home() {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
       }
-      // If timer is running, show confirmation dialog
-      if (timerData?.timerMode === 'running') {
+      // Check current timer mode directly from state, not from a potentially stale closure
+      if (timerMode === 'running') {
         setShowDisconnectConfirm(true);
       }
     } else { // online
@@ -200,7 +201,7 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [powerEventsRef, toast, user, timerData?.timerMode]);
+  }, [firestore, toast, user, timerMode]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
@@ -320,11 +321,7 @@ export default function Home() {
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode) return;
 
-    if (timerData.timerMode !== 'paused') return;
-
-    // Only resume on power coming ON if it wasn't an intentional disconnect
-    if (isPowerOnline && !manualDisconnectRef.current) {
-      if (timerData.timerMode === 'paused') {
+    if (isPowerOnline && timerData.timerMode === 'paused' && !manualDisconnectRef.current) {
         const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
         if (timerData.pauseTime) {
@@ -336,9 +333,8 @@ export default function Home() {
             pauseTime: null,
             accumulatedPauseTime: newAccumulatedPauseTime
         });
-      }
     }
-  }, [isPowerOnline, isTimerLoading, timerData]); 
+  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState]); 
   
   useEffect(() => {
     if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
