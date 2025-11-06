@@ -9,8 +9,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff, Bell, BellOff, Play, Power, X } from 'lucide-react';
+import { Zap, ZapOff, Bell, BellOff, Play, Power, X, AlertTriangle } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
@@ -82,11 +83,17 @@ export default function Home() {
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
   const [displayTime, setDisplayTime] = useState(0);
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [disconnectCountdown, setDisconnectCountdown] = useState(10);
+
 
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioContextStarted = useRef(false);
   const lastBellIntervalRef = useRef(0);
+  const disconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const manualDisconnectRef = useRef(false);
 
   const startAudioContext = useCallback(async () => {
     if (audioContextStarted.current || Tone.context.state === 'running') {
@@ -145,6 +152,13 @@ export default function Home() {
       setDocumentNonBlocking(userTimerRef, data, { merge: true });
     }
   }, [userTimerRef]);
+
+  const pauseTimer = useCallback(() => {
+    updateTimerState({ 
+        timerMode: 'paused',
+        pauseTime: serverTimestamp() as unknown as Timestamp,
+    });
+  }, [updateTimerState]);
   
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
@@ -157,13 +171,6 @@ export default function Home() {
     if (event.status === 'offline') {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
-      }
-      // Check current timer mode directly from the most recent timerData
-      if (timerData?.timerMode === 'running') {
-        updateTimerState({ 
-            timerMode: 'paused',
-            pauseTime: serverTimestamp() as unknown as Timestamp,
-        });
       }
     } else { // online
       if (powerOnSoundRef.current) {
@@ -187,9 +194,50 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user, timerData?.timerMode, updateTimerState]);
+  }, [firestore, toast, user]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
+
+  const clearDisconnectTimers = useCallback(() => {
+    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    disconnectTimerRef.current = null;
+    countdownIntervalRef.current = null;
+  }, []);
+
+  const handlePauseNow = useCallback(() => {
+    manualDisconnectRef.current = true;
+    clearDisconnectTimers();
+    setShowDisconnectConfirm(false);
+    pauseTimer();
+  }, [clearDisconnectTimers, pauseTimer]);
+
+  const handleKeepTimerRunning = useCallback(() => {
+    manualDisconnectRef.current = true;
+    clearDisconnectTimers();
+    setShowDisconnectConfirm(false);
+  }, [clearDisconnectTimers]);
+
+
+  useEffect(() => {
+    if (isPowerOnline === false && timerData?.timerMode === 'running' && !manualDisconnectRef.current) {
+        setShowDisconnectConfirm(true);
+        setDisconnectCountdown(10);
+
+        countdownIntervalRef.current = setInterval(() => {
+            setDisconnectCountdown(prev => prev - 1);
+        }, 1000);
+
+        disconnectTimerRef.current = setTimeout(() => {
+            handlePauseNow();
+        }, 10000);
+    } else if (isPowerOnline === true) {
+        // Power is back, reset everything related to disconnect confirmation
+        setShowDisconnectConfirm(false);
+        clearDisconnectTimers();
+        manualDisconnectRef.current = false; // Reset manual flag
+    }
+  }, [isPowerOnline, timerData?.timerMode, clearDisconnectTimers, handlePauseNow]);
 
   const playBellSequence = useCallback((count: number) => {
     if (!bellSoundRef.current || !audioContextStarted.current) return;
@@ -268,7 +316,7 @@ export default function Home() {
   }, [timerData, timerMode, updateTimerState, playBellSequence]); 
   
   useEffect(() => {
-    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode) return;
+    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode || showDisconnectConfirm) return;
 
     if (isPowerOnline && timerData.timerMode === 'paused') {
         const now = new Date().getTime();
@@ -283,7 +331,7 @@ export default function Home() {
             accumulatedPauseTime: newAccumulatedPauseTime
         });
     }
-  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState]); 
+  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState, showDisconnectConfirm]); 
   
   useEffect(() => {
     if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
@@ -478,6 +526,24 @@ export default function Home() {
         </div>
       )}
 
+      <AlertDialog open={showDisconnectConfirm} onOpenChange={setShowDisconnectConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="text-destructive" />
+              Power Disconnected
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              The timer will automatically pause in {disconnectCountdown} seconds. Do you want to keep it running?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handlePauseNow}>Pause Now</AlertDialogCancel>
+            <AlertDialogAction onClick={handleKeepTimerRunning}>Keep Timer Running</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <header className="absolute top-4 right-4 z-10">
         <AnalysisSheet />
       </header>
@@ -499,4 +565,3 @@ export default function Home() {
     </div>
   );
 }
- 
