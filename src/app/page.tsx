@@ -9,7 +9,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
-import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Zap, ZapOff, Bell, BellOff, Play, Power, X } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
@@ -84,16 +83,10 @@ export default function Home() {
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
   const [displayTime, setDisplayTime] = useState(0);
 
-  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  const [disconnectCountdown, setDisconnectCountdown] = useState(10);
-  const disconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioContextStarted = useRef(false);
   const lastBellIntervalRef = useRef(0);
-  const manualDisconnectRef = useRef(false);
 
   const startAudioContext = useCallback(async () => {
     if (audioContextStarted.current || Tone.context.state === 'running') {
@@ -152,13 +145,6 @@ export default function Home() {
       setDocumentNonBlocking(userTimerRef, data, { merge: true });
     }
   }, [userTimerRef]);
-
-  const pauseTimerForPowerCut = useCallback(() => {
-      updateTimerState({ 
-          timerMode: 'paused',
-          pauseTime: serverTimestamp() as unknown as Timestamp,
-      });
-  }, [updateTimerState]);
   
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
@@ -174,10 +160,12 @@ export default function Home() {
       }
       // Check current timer mode directly from the most recent timerData
       if (timerData?.timerMode === 'running') {
-        setShowDisconnectConfirm(true);
+        updateTimerState({ 
+            timerMode: 'paused',
+            pauseTime: serverTimestamp() as unknown as Timestamp,
+        });
       }
     } else { // online
-      manualDisconnectRef.current = false;
       if (powerOnSoundRef.current) {
         powerOnSoundRef.current.triggerAttackRelease('C5', '8n');
       }
@@ -199,46 +187,9 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user, timerData?.timerMode]);
+  }, [firestore, toast, user, timerData?.timerMode, updateTimerState]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
-
-  // Effect for disconnect confirmation dialog
-  useEffect(() => {
-    if (showDisconnectConfirm) {
-      manualDisconnectRef.current = false;
-      setDisconnectCountdown(10);
-
-      // Start 10s timeout to auto-pause
-      disconnectTimerRef.current = setTimeout(() => {
-        if (!manualDisconnectRef.current) {
-            pauseTimerForPowerCut();
-        }
-        setShowDisconnectConfirm(false);
-      }, 10000);
-
-      // Start 1s interval for countdown display
-      countdownIntervalRef.current = setInterval(() => {
-        setDisconnectCountdown(prev => Math.max(0, prev - 1));
-      }, 1000);
-
-    } else {
-      // Cleanup timers when dialog is hidden
-      if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
-      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-    }
-
-    return () => {
-      if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
-      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-    };
-  }, [showDisconnectConfirm, pauseTimerForPowerCut]);
-
-  const handleManualDisconnect = () => {
-    manualDisconnectRef.current = true;
-    setShowDisconnectConfirm(false);
-  };
-
 
   const playBellSequence = useCallback((count: number) => {
     if (!bellSoundRef.current || !audioContextStarted.current) return;
@@ -319,7 +270,7 @@ export default function Home() {
   useEffect(() => {
     if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode) return;
 
-    if (isPowerOnline && timerData.timerMode === 'paused' && !manualDisconnectRef.current) {
+    if (isPowerOnline && timerData.timerMode === 'paused') {
         const now = new Date().getTime();
         let newAccumulatedPauseTime = timerData.accumulatedPauseTime || 0;
         if (timerData.pauseTime) {
@@ -518,23 +469,6 @@ export default function Home() {
   
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-radial">
-      <AlertDialog open={showDisconnectConfirm} onOpenChange={setShowDisconnectConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>क्या आप चार्जर हटा रहे हैं?</AlertDialogTitle>
-            <AlertDialogDescription>
-              यदि आप चार्जर हटा रहे हैं तो टाइमर को चालू रखने के लिए पुष्टि करें। अन्यथा, यह 10 सेकंड में बिजली कटौती मानकर रुक जाएगा।
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="gap-2">
-            <Button variant="outline" className="relative" disabled>
-                Auto-pausing in {disconnectCountdown}s...
-            </Button>
-            <Button onClick={handleManualDisconnect}>हाँ, टाइमर चालू रखें</Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       {timerMode === 'finished' && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center animation-flash">
           <h1 className="text-6xl font-bold text-destructive-foreground animate-pulse">TIME'S UP!</h1>
@@ -565,3 +499,4 @@ export default function Home() {
     </div>
   );
 }
+ 

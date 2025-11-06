@@ -108,19 +108,19 @@ export function AnalysisSheet() {
                     <Card>
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2 text-lg"><BarChart2 /> Summary</CardTitle>
-                        </Header>
+                        </CardHeader>
                         <CardContent><p className="text-sm text-muted-foreground">{analysis.summary}</p></CardContent>
                     </Card>
                     <Card>
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2 text-lg"><AlertTriangle /> Forecast</CardTitle>
-                        </Header>
+                        </CardHeader>
                         <CardContent><p className="text-sm text-muted-foreground">{analysis.forecast}</p></CardContent>
                     </Card>
                     <Card>
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2 text-lg"><Lightbulb /> Recommendations</CardTitle>
-                        </Header>
+                        </CardHeader>
                         <CardContent><p className="text-sm text-muted-foreground">{analysis.recommendations}</p></CardContent>
                     </Card>
                 </div>
@@ -142,3 +142,4 @@ export function AnalysisSheet() {
     </Sheet>
   );
 }
+ 
