@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from '@/components/ui/sheet';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -14,11 +14,9 @@ import type { AnalyzePowerOutageTrendsOutput } from '@/ai/flows/analyze-power-ou
 import { useFirestore, useUser, useCollection, useMemoFirebase } from '@/firebase';
 import { collection, query, orderBy, Timestamp } from 'firebase/firestore';
 
-
 type PowerEventWithDate = Omit<PowerEvent, 'timestamp'> & {
   timestamp: Timestamp;
 }
-
 
 function formatEventTime(date: Date): string {
   return new Intl.DateTimeFormat('default', {
@@ -39,14 +37,12 @@ export function AnalysisSheet() {
     return null;
   }, [firestore, user]);
 
-
   const { data: log, isLoading: isLogLoading } = useCollection<PowerEventWithDate>(powerEventsRef);
 
   const [analysis, setAnalysis] = useState<AnalyzePowerOutageTrendsOutput | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
-
 
   const handleAnalyze = async () => {
     if (!log) return;
