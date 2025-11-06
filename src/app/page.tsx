@@ -11,7 +11,7 @@ import { PowerStatus } from '@/components/app/power-status';
 import { AnalysisSheet } from '@/components/app/analysis-sheet';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Zap, ZapOff, Bell, BellOff, Play, Power, X, AlertTriangle } from 'lucide-react';
+import { Zap, ZapOff, Bell, BellOff, Play, Power, X, AlertTriangle, AlarmClockOff } from 'lucide-react';
 import { useAuth, useFirestore, useUser, useDoc, useMemoFirebase } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
@@ -82,6 +82,9 @@ export default function Home() {
   
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
+  const [powerOnAlarm, setPowerOnAlarm] = useState<Tone.AMSynth | null>(null);
+  const [showPowerOnAlarm, setShowPowerOnAlarm] = useState(false);
+
   const [displayTime, setDisplayTime] = useState(0);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [disconnectCountdown, setDisconnectCountdown] = useState(10);
@@ -113,7 +116,6 @@ export default function Home() {
 
   // Sound effects
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
-  const powerOnSoundRef = useRef<Tone.Synth | null>(null);
   const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
 
   useEffect(() => {
@@ -122,11 +124,6 @@ export default function Home() {
       envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.5 },
     }).toDestination();
     
-    powerOnSoundRef.current = new Tone.Synth({
-      oscillator: { type: 'sine' },
-      envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
-    }).toDestination();
-
     bellSoundRef.current = new Tone.MetalSynth({
       frequency: 250,
       envelope: { attack: 0.001, decay: 1.4, release: 0.2 },
@@ -135,6 +132,18 @@ export default function Home() {
       resonance: 4000,
       octaves: 1.5,
     }).toDestination();
+
+    const wakeUpAlarm = new Tone.AMSynth({
+      harmonicity: 1.25,
+      detune: 0,
+      oscillator: { type: 'fatsawtooth' },
+      envelope: { attack: 0.1, decay: 0.2, sustain: 0.5, release: 0.8 },
+      modulation: { type: 'square' },
+      modulationEnvelope: { attack: 0.5, decay: 0.01, sustain: 1, release: 0.5 },
+    }).toDestination();
+    wakeUpAlarm.volume.value = -3; // A bit loud but not deafening
+    setPowerOnAlarm(wakeUpAlarm);
+
   }, []);
   
   useEffect(() => {
@@ -160,22 +169,40 @@ export default function Home() {
     });
   }, [updateTimerState]);
   
+  const startWakeUpAlarm = useCallback(async () => {
+    await startAudioContext();
+    if (powerOnAlarm) {
+      setShowPowerOnAlarm(true);
+      // Play a sequence of notes to be more alerting
+      Tone.Transport.start();
+      new Tone.Loop(time => {
+        powerOnAlarm.triggerAttackRelease('C5', '8n', time);
+        powerOnAlarm.triggerAttackRelease('G5', '8n', time + 0.25);
+        powerOnAlarm.triggerAttackRelease('C5', '8n', time + 0.5);
+      }, '0.75s').start(0);
+    }
+  }, [powerOnAlarm, startAudioContext]);
+
+  const stopWakeUpAlarm = useCallback(() => {
+    Tone.Transport.stop();
+    Tone.Transport.cancel(); // Clear all scheduled events
+    setShowPowerOnAlarm(false);
+  }, []);
+
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
     
     const currentPowerEventsRef = collection(firestore, 'users', user.uid, 'powerEvents');
     addDocumentNonBlocking(currentPowerEventsRef, { ...event, userId: user.uid });
     
-    if(!audioContextStarted.current) return;
+    if(!audioContextStarted.current) await startAudioContext();
 
     if (event.status === 'offline') {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
       }
     } else { // online
-      if (powerOnSoundRef.current) {
-        powerOnSoundRef.current.triggerAttackRelease('C5', '8n');
-      }
+      startWakeUpAlarm();
     }
 
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -194,7 +221,7 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user]);
+  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
@@ -225,18 +252,20 @@ export default function Home() {
         setDisconnectCountdown(10);
 
         countdownIntervalRef.current = setInterval(() => {
-            setDisconnectCountdown(prev => prev - 1);
+            setDisconnectCountdown(prev => prev > 0 ? prev - 1 : 0);
         }, 1000);
 
         disconnectTimerRef.current = setTimeout(() => {
             handlePauseNow();
         }, 10000);
     } else if (isPowerOnline === true) {
-        // Power is back, reset everything related to disconnect confirmation
         setShowDisconnectConfirm(false);
         clearDisconnectTimers();
-        manualDisconnectRef.current = false; // Reset manual flag
+        manualDisconnectRef.current = false;
     }
+     return () => {
+      clearDisconnectTimers();
+    };
   }, [isPowerOnline, timerData?.timerMode, clearDisconnectTimers, handlePauseNow]);
 
   const playBellSequence = useCallback((count: number) => {
@@ -316,7 +345,7 @@ export default function Home() {
   }, [timerData, timerMode, updateTimerState, playBellSequence]); 
   
   useEffect(() => {
-    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode || showDisconnectConfirm) return;
+    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode || showDisconnectConfirm || showPowerOnAlarm) return;
 
     if (isPowerOnline && timerData.timerMode === 'paused') {
         const now = new Date().getTime();
@@ -331,7 +360,7 @@ export default function Home() {
             accumulatedPauseTime: newAccumulatedPauseTime
         });
     }
-  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState, showDisconnectConfirm]); 
+  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState, showDisconnectConfirm, showPowerOnAlarm]); 
   
   useEffect(() => {
     if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
@@ -526,6 +555,16 @@ export default function Home() {
         </div>
       )}
 
+      {showPowerOnAlarm && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-green-500/80 backdrop-blur-sm">
+          <Zap className="w-24 h-24 text-white animate-pulse" />
+          <h1 className="text-5xl font-black text-white mt-4">Power Restored! Wake Up!</h1>
+          <Button onClick={stopWakeUpAlarm} size="lg" variant="secondary" className="mt-8">
+            <AlarmClockOff className="mr-2 h-5 w-5" /> Stop Wake-Up Alarm
+          </Button>
+        </div>
+      )}
+
       <AlertDialog open={showDisconnectConfirm} onOpenChange={setShowDisconnectConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -565,3 +604,5 @@ export default function Home() {
     </div>
   );
 }
+
+    
