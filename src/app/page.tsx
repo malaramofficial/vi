@@ -99,6 +99,13 @@ export default function Home() {
   const disconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const manualDisconnectRef = useRef(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    if (audioSrc && audioRef.current) {
+      audioRef.current.play().catch(console.error);
+    }
+  }, [audioSrc]);
 
   const startAudioContext = useCallback(async () => {
     if (audioContextStarted.current || Tone.context.state === 'running') {
@@ -554,7 +561,7 @@ export default function Home() {
   
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-radial">
-      {audioSrc && <audio src={audioSrc} autoPlay onEnded={() => setAudioSrc(null)} />}
+      {audioSrc && <audio ref={audioRef} src={audioSrc} onEnded={() => setAudioSrc(null)} />}
       {timerMode === 'finished' && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center animation-flash">
           <h1 className="text-6xl font-bold text-destructive-foreground animate-pulse">TIME'S UP!</h1>
