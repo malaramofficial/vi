@@ -13,7 +13,11 @@ import type { AnalyzePowerOutageTrendsOutput } from '@/ai/flows/analyze-power-ou
 import { useFirestore, useUser } from '@/firebase';
 import { collection, query, orderBy, getDocs, Timestamp } from 'firebase/firestore';
 
-export function AnalysisSheet() {
+type AnalysisSheetProps = {
+  speak: (text: string) => void;
+};
+
+export function AnalysisSheet({ speak }: AnalysisSheetProps) {
   const firestore = useFirestore();
   const { user } = useUser();
   
@@ -30,6 +34,7 @@ export function AnalysisSheet() {
     setIsLoading(true);
     setError(null);
     setAnalysis(null);
+    speak("आपके पावर डेटा का विश्लेषण किया जा रहा है।");
 
     try {
       const powerEventsRef = query(collection(firestore, 'users', user.uid, 'powerEvents'), orderBy('timestamp', 'desc'));
@@ -142,4 +147,3 @@ export function AnalysisSheet() {
     </Sheet>
   );
 }
- 

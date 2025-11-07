@@ -107,6 +107,12 @@ export default function Home() {
     }
   }, [audioSrc]);
 
+  const speak = useCallback((text: string) => {
+    getSpeechAudio(text).then(result => {
+      setAudioSrc(result.audio);
+    }).catch(console.error);
+  }, []);
+
   const startAudioContext = useCallback(async () => {
     if (audioContextStarted.current || Tone.context.state === 'running') {
       audioContextStarted.current = true;
@@ -193,10 +199,11 @@ export default function Home() {
   }, [powerOnAlarm, startAudioContext]);
 
   const stopWakeUpAlarm = useCallback(() => {
+    speak("वेक-अप अलार्म बंद कर दिया गया है।");
     Tone.Transport.stop();
     Tone.Transport.cancel(); // Clear all scheduled events
     setShowPowerOnAlarm(false);
-  }, []);
+  }, [speak]);
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
@@ -242,17 +249,19 @@ export default function Home() {
   }, []);
 
   const handlePauseNow = useCallback(() => {
+    speak("टाइमर रोक दिया गया है।");
     manualDisconnectRef.current = true;
     clearDisconnectTimers();
     setShowDisconnectConfirm(false);
     pauseTimer();
-  }, [clearDisconnectTimers, pauseTimer]);
+  }, [clearDisconnectTimers, pauseTimer, speak]);
 
   const handleKeepTimerRunning = useCallback(() => {
+    speak("टाइमर चलता रहेगा।");
     manualDisconnectRef.current = true;
     clearDisconnectTimers();
     setShowDisconnectConfirm(false);
-  }, [clearDisconnectTimers]);
+  }, [clearDisconnectTimers, speak]);
 
 
   useEffect(() => {
@@ -434,15 +443,14 @@ export default function Home() {
       
       updateTimerState(newTimerData);
 
-      // TTS
       const instructions = "आपका टाइमर शुरू हो गया है। बिजली जाने पर यह अपने आप रुक जाएगा और हर 15 मिनट में घंटी बजेगी।";
-      getSpeechAudio(instructions).then(result => {
-        setAudioSrc(result.audio);
-      }).catch(console.error);
+      speak(instructions);
     }
   };
 
   const handleReset = () => {
+    const isBreak = timerMode === 'break';
+    speak(isBreak ? "अगला टाइमर रद्द कर दिया गया है।" : "टाइमर रद्द कर दिया गया है।");
     updateTimerState({
       timerMode: 'idle',
       totalDuration: 0,
@@ -456,6 +464,7 @@ export default function Home() {
   };
 
   const handleStopAlarm = () => {
+    speak("अलार्म बंद हो गया है। अब आपका ब्रेक टाइम शुरू हो गया है।");
     updateTimerState({ 
         timerMode: 'break',
         breakStartTime: serverTimestamp() as unknown as Timestamp,
@@ -600,7 +609,7 @@ export default function Home() {
       </AlertDialog>
 
       <header className="absolute top-4 right-4 z-10">
-        <AnalysisSheet />
+        <AnalysisSheet speak={speak} />
       </header>
 
       <main className="w-full max-w-md flex flex-col items-center">
