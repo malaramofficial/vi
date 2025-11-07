@@ -363,7 +363,7 @@ export default function Home() {
   }, [timerData, timerMode, updateTimerState, playBellSequence]); 
   
   useEffect(() => {
-    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode || showDisconnectConfirm || showPowerOnAlarm) return;
+    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode || showDisconnectConfirm) return;
 
     if (isPowerOnline && timerData.timerMode === 'paused') {
         const now = new Date().getTime();
@@ -378,7 +378,7 @@ export default function Home() {
             accumulatedPauseTime: newAccumulatedPauseTime
         });
     }
-  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState, showDisconnectConfirm, showPowerOnAlarm]); 
+  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState, showDisconnectConfirm]); 
   
   useEffect(() => {
     if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
