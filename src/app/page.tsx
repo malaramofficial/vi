@@ -18,6 +18,7 @@ import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore'
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from '@/lib/utils';
 import { getSpeechAudio } from './actions';
+import type { GenerateSpeechOutput } from '@/ai/flows/generate-speech-flow';
 
 type TimerMode = 'idle' | 'running' | 'paused' | 'finished' | 'break';
 
@@ -83,7 +84,7 @@ export default function Home() {
   
   const [alarm, setAlarm] = useState<Tone.PulseOscillator | null>(null);
   const [lfo, setLfo] = useState<Tone.LFO | null>(null);
-  const [powerOnAlarm, setPowerOnAlarm] = useState<Tone.AMSynth | null>(null);
+  const [powerOnAlarm, setPowerOnAlarm] = useState<Tone.FMSynth | null>(null);
   const [showPowerOnAlarm, setShowPowerOnAlarm] = useState(false);
 
   const [displayTime, setDisplayTime] = useState(0);
@@ -108,7 +109,7 @@ export default function Home() {
   }, [audioSrc]);
 
   const speak = useCallback((text: string) => {
-    getSpeechAudio(text).then(result => {
+    getSpeechAudio(text).then((result: GenerateSpeechOutput) => {
       setAudioSrc(result.audio);
     }).catch(console.error);
   }, []);
@@ -148,15 +149,16 @@ export default function Home() {
       octaves: 1.5,
     }).toDestination();
 
-    const wakeUpAlarm = new Tone.AMSynth({
-      harmonicity: 1.25,
+    const wakeUpAlarm = new Tone.FMSynth({
+      harmonicity: 3,
+      modulationIndex: 10,
       detune: 0,
-      oscillator: { type: 'fatsawtooth' },
-      envelope: { attack: 0.1, decay: 0.2, sustain: 0.5, release: 0.8 },
+      oscillator: { type: 'sine' },
+      envelope: { attack: 0.01, decay: 0.1, sustain: 0.5, release: 0.1 },
       modulation: { type: 'square' },
       modulationEnvelope: { attack: 0.5, decay: 0.01, sustain: 1, release: 0.5 },
     }).toDestination();
-    wakeUpAlarm.volume.value = -3; // A bit loud but not deafening
+    wakeUpAlarm.volume.value = 0; // Loud!
     setPowerOnAlarm(wakeUpAlarm);
 
   }, []);
@@ -178,23 +180,23 @@ export default function Home() {
   }, [userTimerRef]);
 
   const pauseTimer = useCallback(() => {
-    updateTimerState({ 
-        timerMode: 'paused',
-        pauseTime: serverTimestamp() as unknown as Timestamp,
-    });
-  }, [updateTimerState]);
+    if (timerData?.timerMode === 'running') {
+      updateTimerState({ 
+          timerMode: 'paused',
+          pauseTime: serverTimestamp() as unknown as Timestamp,
+      });
+    }
+  }, [updateTimerState, timerData?.timerMode]);
   
   const startWakeUpAlarm = useCallback(async () => {
     await startAudioContext();
     if (powerOnAlarm) {
       setShowPowerOnAlarm(true);
-      // Play a sequence of notes to be more alerting
       Tone.Transport.start();
       new Tone.Loop(time => {
-        powerOnAlarm.triggerAttackRelease('C5', '8n', time);
-        powerOnAlarm.triggerAttackRelease('G5', '8n', time + 0.25);
-        powerOnAlarm.triggerAttackRelease('C5', '8n', time + 0.5);
-      }, '0.75s').start(0);
+        powerOnAlarm.triggerAttackRelease('C5', '16n', time);
+        powerOnAlarm.triggerAttackRelease('G5', '16n', time + 0.125);
+      }, '0.25s').start(0);
     }
   }, [powerOnAlarm, startAudioContext]);
 
@@ -204,6 +206,21 @@ export default function Home() {
     Tone.Transport.cancel(); // Clear all scheduled events
     setShowPowerOnAlarm(false);
   }, [speak]);
+
+  const clearDisconnectTimers = useCallback(() => {
+    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    disconnectTimerRef.current = null;
+    countdownIntervalRef.current = null;
+  }, []);
+
+  const handlePauseNow = useCallback(() => {
+    speak("टाइमर रोक दिया गया है।");
+    manualDisconnectRef.current = true;
+    clearDisconnectTimers();
+    setShowDisconnectConfirm(false);
+    pauseTimer();
+  }, [clearDisconnectTimers, pauseTimer, speak]);
 
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
@@ -217,7 +234,22 @@ export default function Home() {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
       }
+      if (timerData?.timerMode === 'running' && !manualDisconnectRef.current) {
+        setShowDisconnectConfirm(true);
+        setDisconnectCountdown(10);
+
+        countdownIntervalRef.current = setInterval(() => {
+            setDisconnectCountdown(prev => prev > 0 ? prev - 1 : 0);
+        }, 1000);
+
+        disconnectTimerRef.current = setTimeout(() => {
+            handlePauseNow();
+        }, 10000);
+      }
     } else { // online
+      setShowDisconnectConfirm(false);
+      clearDisconnectTimers();
+      manualDisconnectRef.current = false;
       startWakeUpAlarm();
     }
 
@@ -237,24 +269,9 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext]);
+  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext, timerData?.timerMode, handlePauseNow, clearDisconnectTimers]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
-
-  const clearDisconnectTimers = useCallback(() => {
-    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-    disconnectTimerRef.current = null;
-    countdownIntervalRef.current = null;
-  }, []);
-
-  const handlePauseNow = useCallback(() => {
-    speak("टाइमर रोक दिया गया है।");
-    manualDisconnectRef.current = true;
-    clearDisconnectTimers();
-    setShowDisconnectConfirm(false);
-    pauseTimer();
-  }, [clearDisconnectTimers, pauseTimer, speak]);
 
   const handleKeepTimerRunning = useCallback(() => {
     speak("टाइमर चलता रहेगा।");
@@ -262,29 +279,6 @@ export default function Home() {
     clearDisconnectTimers();
     setShowDisconnectConfirm(false);
   }, [clearDisconnectTimers, speak]);
-
-
-  useEffect(() => {
-    if (isPowerOnline === false && timerData?.timerMode === 'running' && !manualDisconnectRef.current) {
-        setShowDisconnectConfirm(true);
-        setDisconnectCountdown(10);
-
-        countdownIntervalRef.current = setInterval(() => {
-            setDisconnectCountdown(prev => prev > 0 ? prev - 1 : 0);
-        }, 1000);
-
-        disconnectTimerRef.current = setTimeout(() => {
-            handlePauseNow();
-        }, 10000);
-    } else if (isPowerOnline === true) {
-        setShowDisconnectConfirm(false);
-        clearDisconnectTimers();
-        manualDisconnectRef.current = false;
-    }
-     return () => {
-      clearDisconnectTimers();
-    };
-  }, [isPowerOnline, timerData?.timerMode, clearDisconnectTimers, handlePauseNow]);
 
   const playBellSequence = useCallback((count: number) => {
     if (!bellSoundRef.current || !audioContextStarted.current) return;
@@ -363,7 +357,7 @@ export default function Home() {
   }, [timerData, timerMode, updateTimerState, playBellSequence]); 
   
   useEffect(() => {
-    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode || showDisconnectConfirm) return;
+    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode) return;
 
     if (isPowerOnline && timerData.timerMode === 'paused') {
         const now = new Date().getTime();
@@ -378,7 +372,7 @@ export default function Home() {
             accumulatedPauseTime: newAccumulatedPauseTime
         });
     }
-  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState, showDisconnectConfirm]); 
+  }, [isPowerOnline, isTimerLoading, timerData, updateTimerState]); 
   
   useEffect(() => {
     if ((timerMode === 'running' || timerMode === 'paused' || timerMode === 'break') && !intervalRef.current) {
