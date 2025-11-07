@@ -17,6 +17,7 @@ import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { doc, serverTimestamp, collection, Timestamp } from 'firebase/firestore';
 import { setDocumentNonBlocking, addDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from '@/lib/utils';
+import { getSpeechAudio } from './actions';
 
 type TimerMode = 'idle' | 'running' | 'paused' | 'finished' | 'break';
 
@@ -88,6 +89,7 @@ export default function Home() {
   const [displayTime, setDisplayTime] = useState(0);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [disconnectCountdown, setDisconnectCountdown] = useState(10);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
 
 
   const { toast } = useToast();
@@ -424,6 +426,12 @@ export default function Home() {
       };
       
       updateTimerState(newTimerData);
+
+      // TTS
+      const instructions = "आपका टाइमर शुरू हो गया है। बिजली जाने पर यह अपने आप रुक जाएगा और हर 15 मिनट में घंटी बजेगी।";
+      getSpeechAudio(instructions).then(result => {
+        setAudioSrc(result.audio);
+      }).catch(console.error);
     }
   };
 
@@ -546,6 +554,7 @@ export default function Home() {
   
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-radial">
+      {audioSrc && <audio src={audioSrc} autoPlay onEnded={() => setAudioSrc(null)} />}
       {timerMode === 'finished' && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center animation-flash">
           <h1 className="text-6xl font-bold text-destructive-foreground animate-pulse">TIME'S UP!</h1>
@@ -604,5 +613,3 @@ export default function Home() {
     </div>
   );
 }
-
-    
