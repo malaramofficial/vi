@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 export type PowerEvent = {
   status: 'online' | 'offline';
@@ -9,6 +9,11 @@ export type PowerEvent = {
 
 export function usePowerStatus(onStatusChange?: (event: PowerEvent) => void) {
   const [isOnline, setIsOnline] = useState<boolean | undefined>(undefined);
+  const onStatusChangeRef = useRef(onStatusChange);
+
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  });
 
   const updatePowerStatus = useCallback(async () => {
     if (!('getBattery' in navigator)) {
@@ -19,16 +24,17 @@ export function usePowerStatus(onStatusChange?: (event: PowerEvent) => void) {
       const battery = await (navigator as any).getBattery();
       const newStatus = battery.charging;
 
-      // Only update and call callback if status has actually changed, or it's the first run
       if (isOnline !== newStatus) {
         setIsOnline(newStatus);
-        onStatusChange?.({ status: newStatus ? 'online' : 'offline', timestamp: new Date().toISOString() });
+        if (onStatusChangeRef.current) {
+          onStatusChangeRef.current({ status: newStatus ? 'online' : 'offline', timestamp: new Date().toISOString() });
+        }
       }
     } catch (error) {
       console.error("Could not read battery status.", error);
-      if (isOnline === undefined) setIsOnline(true); // Fallback on error
+      if (isOnline === undefined) setIsOnline(true);
     }
-  }, [isOnline, onStatusChange]);
+  }, [isOnline]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('getBattery' in navigator)) {
@@ -43,7 +49,6 @@ export function usePowerStatus(onStatusChange?: (event: PowerEvent) => void) {
     (navigator as any).getBattery().then((bm: any) => {
       batteryManager = bm;
       batteryManager.addEventListener('chargingchange', batteryEventHandler);
-      // Initial check
       updatePowerStatus();
     }).catch((e: Error) => {
       console.error("Battery status API not available.", e);

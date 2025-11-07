@@ -222,6 +222,13 @@ export default function Home() {
     pauseTimer();
   }, [clearDisconnectTimers, pauseTimer, speak]);
 
+  const handleKeepTimerRunning = useCallback(() => {
+    speak("टाइमर चलता रहेगा।");
+    manualDisconnectRef.current = true;
+    clearDisconnectTimers();
+    setShowDisconnectConfirm(false);
+  }, [clearDisconnectTimers, speak]);
+
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
     
@@ -234,7 +241,7 @@ export default function Home() {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
       }
-      if (timerData?.timerMode === 'running' && !manualDisconnectRef.current) {
+      if (timerMode === 'running' && !manualDisconnectRef.current) {
         setShowDisconnectConfirm(true);
         setDisconnectCountdown(10);
 
@@ -269,16 +276,9 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext, timerData?.timerMode, handlePauseNow, clearDisconnectTimers]);
+  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext, timerMode, handlePauseNow, clearDisconnectTimers]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
-
-  const handleKeepTimerRunning = useCallback(() => {
-    speak("टाइमर चलता रहेगा।");
-    manualDisconnectRef.current = true;
-    clearDisconnectTimers();
-    setShowDisconnectConfirm(false);
-  }, [clearDisconnectTimers, speak]);
 
   const playBellSequence = useCallback((count: number) => {
     if (!bellSoundRef.current || !audioContextStarted.current) return;
@@ -357,7 +357,7 @@ export default function Home() {
   }, [timerData, timerMode, updateTimerState, playBellSequence]); 
   
   useEffect(() => {
-    if (isPowerOnline === undefined || isTimerLoading || !timerData?.timerMode) return;
+    if (isPowerOnline === undefined || isTimerLoading || !timerData) return;
 
     if (isPowerOnline && timerData.timerMode === 'paused') {
         const now = new Date().getTime();
