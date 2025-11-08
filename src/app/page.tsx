@@ -483,6 +483,7 @@ export default function Home() {
     const durationInSeconds = (h * 3600) + (m * 60);
     
     if (durationInSeconds > 0) {
+      acquireWakeLock();
       const newTimerData: Partial<TimerData> = {
         totalDuration: durationInSeconds,
         lastSetDuration: durationInSeconds,
@@ -501,6 +502,7 @@ export default function Home() {
   };
 
   const handleReset = () => {
+    releaseWakeLock();
     const isBreak = timerMode === 'break';
     speak(isBreak ? "अगला टाइमर रद्द कर दिया गया है।" : "टाइमर रद्द कर दिया गया है।");
     updateTimerState({
@@ -517,6 +519,7 @@ export default function Home() {
 
   const handleStopAlarm = () => {
     speak("अलार्म बंद हो गया है। अब आपका ब्रेक टाइम शुरू हो गया है।");
+    releaseWakeLock();
     updateTimerState({ 
         timerMode: 'break',
         breakStartTime: serverTimestamp() as unknown as Timestamp,
