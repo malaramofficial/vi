@@ -105,6 +105,66 @@ export default function Home() {
   const manualDisconnectRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement>(null);
 
+  const timerMode = timerData?.timerMode ?? 'idle';
+
+  // Sound effects
+  const powerOffSoundRef = useRef<Tone.Synth | null>(null);
+  const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
+
+  const acquireWakeLock = useCallback(async () => {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock) {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+        console.log('Screen Wake Lock is active.');
+        wakeLock.addEventListener('release', () => {
+          console.log('Screen Wake Lock was released.');
+          wakeLock = null; // Important: reset on release
+        });
+      } catch (err: any) {
+        console.error(`${err.name}, ${err.message}`);
+      }
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLock) {
+      try {
+        await wakeLock.release();
+        wakeLock = null;
+      } catch (err: any) {
+        console.error(`Wake Lock release failed: ${err.name}, ${err.message}`);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && (timerMode === 'running' || timerMode === 'break')) {
+        acquireWakeLock();
+      }
+    };
+  
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [timerMode, acquireWakeLock]);
+  
+  useEffect(() => {
+      if (timerMode === 'running' || timerMode === 'break') {
+          acquireWakeLock();
+      } else {
+          releaseWakeLock();
+      }
+
+      // Cleanup on component unmount
+      return () => {
+          releaseWakeLock();
+      };
+  }, [timerMode, acquireWakeLock, releaseWakeLock]);
+
+
   useEffect(() => {
     if (audioSrc && audioRef.current) {
       audioRef.current.play().catch(console.error);
@@ -131,49 +191,6 @@ export default function Home() {
     }
   }, []);
 
-  const timerMode = timerData?.timerMode ?? 'idle';
-
-  // Sound effects
-  const powerOffSoundRef = useRef<Tone.Synth | null>(null);
-  const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
-
-  const acquireWakeLock = async () => {
-    if ('wakeLock' in navigator && !wakeLock) {
-      try {
-        wakeLock = await navigator.wakeLock.request('screen');
-        console.log('Screen Wake Lock is active.');
-        wakeLock.addEventListener('release', () => {
-          console.log('Screen Wake Lock was released.');
-          wakeLock = null;
-        });
-      } catch (err: any) {
-        console.error(`${err.name}, ${err.message}`);
-      }
-    }
-  };
-
-  const releaseWakeLock = async () => {
-    if (wakeLock) {
-      try {
-        await wakeLock.release();
-        wakeLock = null;
-      } catch (err: any) {
-        console.error(`${err.name}, ${err.message}`);
-      }
-    }
-  };
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (wakeLock !== null && document.visibilityState === 'visible' && (timerMode === 'running' || timerMode === 'break')) {
-        acquireWakeLock();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [timerMode]);
-
-
   useEffect(() => {
     powerOffSoundRef.current = new Tone.Synth({
       oscillator: { type: 'square' },
@@ -190,13 +207,13 @@ export default function Home() {
     }).toDestination();
 
     const wakeUpAlarm = new Tone.FMSynth({
-      harmonicity: 3,
-      modulationIndex: 10,
-      detune: 0,
-      oscillator: { type: 'sine' },
-      envelope: { attack: 0.01, decay: 0.1, sustain: 0.5, release: 0.1 },
-      modulation: { type: 'square' },
-      modulationEnvelope: { attack: 0.5, decay: 0.01, sustain: 1, release: 0.5 },
+        harmonicity: 3.01,
+        modulationIndex: 14,
+        detune: 0,
+        oscillator: { type: "sine" },
+        envelope: { attack: 0.001, decay: 0.1, sustain: 0.1, release: 0.1 },
+        modulation: { type: "square" },
+        modulationEnvelope: { attack: 0.002, decay: 0.2, sustain: 0, release: 0.2 }
     }).toDestination();
     wakeUpAlarm.volume.value = 0; // Loud!
     setPowerOnAlarm(wakeUpAlarm);
@@ -256,9 +273,9 @@ export default function Home() {
       setShowPowerOnAlarm(true);
       Tone.Transport.start();
       new Tone.Loop(time => {
-        powerOnAlarm.triggerAttackRelease('C5', '16n', time);
-        powerOnAlarm.triggerAttackRelease('G5', '16n', time + 0.125);
-      }, '0.25s').start(0);
+          powerOnAlarm.triggerAttackRelease("C5", "16n", time);
+          powerOnAlarm.triggerAttackRelease("G5", "16n", time + 0.125);
+      }, "0.25s").start(0);
     }
   }, [powerOnAlarm, startAudioContext]);
 
@@ -391,7 +408,6 @@ export default function Home() {
                     timerMode: 'running'
                 };
                 updateTimerState(newTimerData);
-                acquireWakeLock(); // Re-acquire lock for the new session
             }
         }
     }, 1000);
@@ -457,11 +473,10 @@ export default function Home() {
         setLfo(null);
       }
     }
-  }, [timerMode, startAudioContext, alarm, lfo]);
+  }, [timerMode, startAudioContext, alarm, lfo, releaseWakeLock]);
 
   const handleStartTimer = async () => {
     await startAudioContext();
-    await acquireWakeLock();
 
     const h = parseInt(hours, 10) || 0;
     const m = parseInt(minutes, 10) || 0;
@@ -486,7 +501,6 @@ export default function Home() {
   };
 
   const handleReset = () => {
-    releaseWakeLock();
     const isBreak = timerMode === 'break';
     speak(isBreak ? "अगला टाइमर रद्द कर दिया गया है।" : "टाइमर रद्द कर दिया गया है।");
     updateTimerState({
@@ -507,7 +521,6 @@ export default function Home() {
         timerMode: 'break',
         breakStartTime: serverTimestamp() as unknown as Timestamp,
     });
-    acquireWakeLock(); // Re-acquire for break time
   };
 
   const formatTime = (seconds: number) => {
