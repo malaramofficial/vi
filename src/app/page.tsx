@@ -33,6 +33,9 @@ type TimerData = {
   updatedAt: any;
 };
 
+// Wake Lock Sentinel
+let wakeLock: WakeLockSentinel | null = null;
+
 const TimerDisplay = ({ time, progress, timerMode }: { time: string, progress: number, timerMode: TimerMode }) => (
   <div className="relative flex items-center justify-center w-64 h-64">
     <svg className="absolute w-full h-full" viewBox="0 0 100 100">
@@ -134,6 +137,43 @@ export default function Home() {
   const powerOffSoundRef = useRef<Tone.Synth | null>(null);
   const bellSoundRef = useRef<Tone.MetalSynth | null>(null);
 
+  const acquireWakeLock = async () => {
+    if ('wakeLock' in navigator && !wakeLock) {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+        console.log('Screen Wake Lock is active.');
+        wakeLock.addEventListener('release', () => {
+          console.log('Screen Wake Lock was released.');
+          wakeLock = null;
+        });
+      } catch (err: any) {
+        console.error(`${err.name}, ${err.message}`);
+      }
+    }
+  };
+
+  const releaseWakeLock = async () => {
+    if (wakeLock) {
+      try {
+        await wakeLock.release();
+        wakeLock = null;
+      } catch (err: any) {
+        console.error(`${err.name}, ${err.message}`);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (wakeLock !== null && document.visibilityState === 'visible' && (timerMode === 'running' || timerMode === 'break')) {
+        acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [timerMode]);
+
+
   useEffect(() => {
     powerOffSoundRef.current = new Tone.Synth({
       oscillator: { type: 'square' },
@@ -179,6 +219,13 @@ export default function Home() {
     }
   }, [userTimerRef]);
 
+  const clearDisconnectTimers = useCallback(() => {
+    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    disconnectTimerRef.current = null;
+    countdownIntervalRef.current = null;
+  }, []);
+
   const pauseTimer = useCallback(() => {
     if (timerData?.timerMode === 'running') {
       updateTimerState({ 
@@ -187,6 +234,21 @@ export default function Home() {
       });
     }
   }, [updateTimerState, timerData?.timerMode]);
+
+  const handlePauseNow = useCallback(() => {
+    speak("टाइमर रोक दिया गया है।");
+    manualDisconnectRef.current = true;
+    clearDisconnectTimers();
+    setShowDisconnectConfirm(false);
+    pauseTimer();
+  }, [clearDisconnectTimers, pauseTimer, speak]);
+
+  const handleKeepTimerRunning = useCallback(() => {
+    speak("टाइमर चलता रहेगा।");
+    manualDisconnectRef.current = true;
+    clearDisconnectTimers();
+    setShowDisconnectConfirm(false);
+  }, [clearDisconnectTimers, speak]);
   
   const startWakeUpAlarm = useCallback(async () => {
     await startAudioContext();
@@ -207,28 +269,6 @@ export default function Home() {
     setShowPowerOnAlarm(false);
   }, [speak]);
 
-  const clearDisconnectTimers = useCallback(() => {
-    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-    disconnectTimerRef.current = null;
-    countdownIntervalRef.current = null;
-  }, []);
-
-  const handlePauseNow = useCallback(() => {
-    speak("टाइमर रोक दिया गया है।");
-    manualDisconnectRef.current = true;
-    clearDisconnectTimers();
-    setShowDisconnectConfirm(false);
-    pauseTimer();
-  }, [clearDisconnectTimers, pauseTimer, speak]);
-
-  const handleKeepTimerRunning = useCallback(() => {
-    speak("टाइमर चलता रहेगा।");
-    manualDisconnectRef.current = true;
-    clearDisconnectTimers();
-    setShowDisconnectConfirm(false);
-  }, [clearDisconnectTimers, speak]);
-
   const handlePowerStatusChange = useCallback(async (event: PowerEvent) => {
     if (!user || !firestore) return;
     
@@ -241,7 +281,7 @@ export default function Home() {
       if (powerOffSoundRef.current) {
         powerOffSoundRef.current.triggerAttackRelease('C4', '8n');
       }
-      if (timerMode === 'running' && !manualDisconnectRef.current) {
+      if (timerData?.timerMode === 'running' && !manualDisconnectRef.current) {
         setShowDisconnectConfirm(true);
         setDisconnectCountdown(10);
 
@@ -276,7 +316,7 @@ export default function Home() {
       description: `Device is now ${event.status === 'online' ? 'charging' : 'on battery'}.`,
       action: event.status === 'online' ? <Zap className="text-green-500" /> : <ZapOff className="text-destructive" />,
     });
-  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext, timerMode, handlePauseNow, clearDisconnectTimers]);
+  }, [firestore, toast, user, startWakeUpAlarm, startAudioContext, timerData?.timerMode, handlePauseNow, clearDisconnectTimers]);
   
   const isPowerOnline = usePowerStatus(handlePowerStatusChange);
 
@@ -351,6 +391,7 @@ export default function Home() {
                     timerMode: 'running'
                 };
                 updateTimerState(newTimerData);
+                acquireWakeLock(); // Re-acquire lock for the new session
             }
         }
     }, 1000);
@@ -394,6 +435,7 @@ export default function Home() {
 
   useEffect(() => {
     if (timerMode === 'finished') {
+      releaseWakeLock();
       const initAlarm = async () => {
         if(!audioContextStarted.current) await startAudioContext();
         const alarmSynth = new Tone.PulseOscillator('C4', 0.4).toDestination();
@@ -419,6 +461,7 @@ export default function Home() {
 
   const handleStartTimer = async () => {
     await startAudioContext();
+    await acquireWakeLock();
 
     const h = parseInt(hours, 10) || 0;
     const m = parseInt(minutes, 10) || 0;
@@ -443,6 +486,7 @@ export default function Home() {
   };
 
   const handleReset = () => {
+    releaseWakeLock();
     const isBreak = timerMode === 'break';
     speak(isBreak ? "अगला टाइमर रद्द कर दिया गया है।" : "टाइमर रद्द कर दिया गया है।");
     updateTimerState({
@@ -463,6 +507,7 @@ export default function Home() {
         timerMode: 'break',
         breakStartTime: serverTimestamp() as unknown as Timestamp,
     });
+    acquireWakeLock(); // Re-acquire for break time
   };
 
   const formatTime = (seconds: number) => {
